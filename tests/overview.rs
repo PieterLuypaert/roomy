@@ -137,6 +137,11 @@ fn opening_a_group_then_a_place_reaches_the_folder_and_back() {
         browser.path(),
         PathBuf::from("/Users/ann/Documents/app/node_modules")
     );
+    let text = screen(&mut app);
+    assert!(
+        text.contains("Test HD › Project dependencies & builds › node_modules"),
+        "{text}"
+    );
 
     press(&mut app, KeyCode::Left);
     assert_eq!(app.group(), Some(Group::Builds));
@@ -152,6 +157,10 @@ fn b_browses_the_whole_disk_and_back_returns_to_the_overview() {
 
     press(&mut app, KeyCode::Char('b'));
     assert_eq!(app.browser().unwrap().path(), PathBuf::from("/"));
+    assert!(screen(&mut app).contains("ruim   Test HD "));
+    press(&mut app, KeyCode::Enter);
+    assert!(screen(&mut app).contains("Test HD › Applications"));
+    press(&mut app, KeyCode::Left);
 
     assert_eq!(press(&mut app, KeyCode::Left), Outcome::Continue);
     assert!(app.browser().is_none());

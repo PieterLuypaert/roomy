@@ -433,15 +433,18 @@ impl App {
     }
 
     fn open_place(&mut self) {
-        let Some(&index) = self.shown.get(self.places.index) else {
+        let (Some(&index), Some(group)) = (self.shown.get(self.places.index), self.group) else {
             return;
         };
+        let origin = vec![self.disk.name.clone(), group.name().to_string()];
+        self.browser.set_origin(origin);
         self.browser.jump(self.summary.places[index].trail.clone());
         self.came_from = Screen::Places;
         self.screen = Screen::Browser;
     }
 
     fn browse_all(&mut self) {
+        self.browser.set_origin(vec![self.disk.name.clone()]);
         self.browser.jump(Vec::new());
         self.came_from = self.screen;
         self.screen = Screen::Browser;

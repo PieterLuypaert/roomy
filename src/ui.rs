@@ -224,6 +224,8 @@ pub struct Browser {
     pending: Option<usize>,
     trasher: Trasher,
     trashed: u64,
+    /// Crumbs for what lies above the floor, when the overview opened the browser.
+    origin: Option<Vec<String>>,
 }
 
 impl Browser {
@@ -244,6 +246,7 @@ impl Browser {
             pending: None,
             trasher: actions::trash,
             trashed: 0,
+            origin: None,
         };
         browser.show(None);
         browser
@@ -303,6 +306,25 @@ impl Browser {
 
     pub fn status(&self) -> Option<&str> {
         self.toast.as_ref().map(Toast::text)
+    }
+
+    /// Heads the breadcrumbs with `origin` in place of the path above the floor.
+    pub fn set_origin(&mut self, origin: Vec<String>) {
+        self.origin = Some(origin);
+    }
+
+    fn crumbs(&self) -> Vec<String> {
+        let Some(origin) = &self.origin else {
+            return path_crumbs(&format::path(&self.path()));
+        };
+        let start = self.floor.saturating_sub(1);
+        let mut node = self.root.descend(&self.trail[..start]);
+        let mut crumbs = origin.clone();
+        for &child in &self.trail[start..] {
+            node = &node.children[child];
+            crumbs.push(node.label().into_owned());
+        }
+        crumbs
     }
 
     /// Shows the folder at `trail`, or the folder holding it when it is a file or does not
@@ -455,7 +477,7 @@ impl Browser {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = screen(frame.area());
-        let crumbs = path_crumbs(&format::path(&self.path()));
+        let crumbs = self.crumbs();
         header(frame, top, &crumbs, &format::size(self.current().size));
         let count = self.count();
         let room = usize::from(body.width.saturating_sub(width(&count) + 10));
