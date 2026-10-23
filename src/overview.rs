@@ -13,6 +13,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
+use crate::detail::{self, Detail, Entry};
 use crate::format;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, DIM, TRACK, WARN};
@@ -473,6 +474,7 @@ impl App {
 
     fn render_overview(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = ui::screen(frame.area());
+        let (body, side) = detail::split(body);
         let crumbs = std::slice::from_ref(&self.disk.name);
         ui::header(frame, top, crumbs, &disk_summary(&self.disk));
         let block = theme::panel("Where the space goes").title_bottom(theme::aside(&self.notes()));
@@ -494,7 +496,10 @@ impl App {
         frame.render_widget(Paragraph::new(vec![line.clone(), line]), bar);
         let pointer = pointer.inner(Margin::new(1, 0));
         frame.render_widget(Paragraph::new(self.pointer(&parts, pointer.width)), pointer);
-        self.render_slices(frame, list);
+        self.render_slices(frame, list, side.is_none());
+        if let (Some(side), Some(slice)) = (side, self.slices.get(self.overview.index)) {
+            detail::render(frame, side, &self.slice_detail(slice));
+        }
         ui::footer(frame, bottom, &OVERVIEW_KEYS);
         if let Some(toast) = &self.toast {
             ui::show_toast(frame, strip, toast);
@@ -531,7 +536,49 @@ impl App {
         notes.join(" · ")
     }
 
-    fn render_slices(&mut self, frame: &mut Frame, area: Rect) {
+    /// The pane for a part of the disk: what it holds and, for a group, its biggest places.
+    fn slice_detail(&self, slice: &Slice) -> Detail {
+        let mut facts = Vec::new();
+        if slice.places > 0 {
+            let places = format::places(slice.places);
+            facts.push(Line::styled(places, Style::new().fg(DIM)));
+        }
+        if let Some(note) = format::access(slice.is_blocked, slice.denied) {
+            let color = if slice.is_blocked { WARN } else { DIM };
+            facts.push(Line::styled(note, Style::new().fg(color)));
+        }
+        let inside = match slice.part {
+            Part::Group(group) => self.place_entries(group),
+            _ => Vec::new(),
+        };
+        Detail {
+            title: slice.name().to_string(),
+            size: slice.size,
+            share: format::share(slice.size, scale(&self.disk, &self.slices)),
+            of: "the disk".to_string(),
+            facts,
+            about: slice.about(&self.disk),
+            heading: "biggest places",
+            inside,
+            whole: slice.size,
+        }
+    }
+
+    fn place_entries(&self, group: Group) -> Vec<Entry> {
+        let places = self.summary.place_indices(group);
+        places
+            .into_iter()
+            .map(|index| &self.summary.places[index])
+            .map(|place| Entry {
+                label: short_path(&place.path),
+                size: place.size,
+                style: Style::new(),
+            })
+            .collect()
+    }
+
+    /// The list of parts; beside a pane it leaves the descriptions and place counts to it.
+    fn render_slices(&mut self, frame: &mut Frame, area: Rect, has_notes: bool) {
         let visible = self.overview.window(area, self.slices.len());
         let name_width = self
             .slices
@@ -542,7 +589,9 @@ impl App {
             })
             .max()
             .unwrap_or(0);
-        let about = ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + 13 + 5);
+        let places = if has_notes { 13 } else { 0 };
+        let about = ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + places + 5);
+        let about = if has_notes { about } else { 0 };
         let rows: Vec<Row> = self.slices[visible]
             .iter()
             .map(|slice| self.slice_row(slice, usize::from(about)))
@@ -553,7 +602,7 @@ impl App {
             Constraint::Length(1),
             Constraint::Length(name_width),
             Constraint::Fill(1),
-            Constraint::Length(13),
+            Constraint::Length(places),
         ];
         frame.render_stateful_widget(ui::list(rows, widths), area, &mut self.overview.state());
     }
@@ -593,6 +642,7 @@ impl App {
             return;
         };
         let [top, body, bottom] = ui::screen(frame.area());
+        let (body, side) = detail::split(body);
         let total: u64 = self
             .shown
             .iter()
@@ -609,7 +659,10 @@ impl App {
         }
         let inner = ui::framed(frame, body, block);
         let [list, strip] = ui::make_room(inner, self.toast.as_ref());
-        self.render_place_rows(frame, list, total);
+        self.render_place_rows(frame, list, total, side.is_none());
+        if let (Some(side), Some(detail)) = (side, self.place_detail(group, total)) {
+            detail::render(frame, side, &detail);
+        }
         ui::footer(frame, bottom, &PLACE_KEYS);
         if let Some(toast) = &self.toast {
             ui::show_toast(frame, strip, toast);
@@ -626,13 +679,39 @@ impl App {
         vec![self.disk.name.clone(), group.name().to_string()]
     }
 
-    fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64) {
+    /// The pane for the selected place, which takes part of the group's `total`.
+    fn place_detail(&self, group: Group, total: u64) -> Option<Detail> {
+        let place = &self.summary.places[*self.shown.get(self.places.index)?];
+        let node = self.browser.root().descend(&place.trail);
+        let mut detail = detail::of_node(node, place.size, group.name(), total);
+        if node.size > place.size && !place.is_container {
+            let whole = format!("{} in the whole folder", format::size(node.size));
+            detail
+                .facts
+                .insert(1, Line::styled(whole, Style::new().fg(DIM)));
+        }
+        if place.is_container {
+            detail.facts.truncate(1);
+            detail
+                .facts
+                .push(Line::styled("loose files", Style::new().fg(DIM)));
+            detail.inside.clear();
+        }
+        detail
+            .facts
+            .push(Line::styled(place.label, Style::new().fg(DIM)));
+        Some(detail)
+    }
+
+    /// The list of places; beside a pane it leaves the labels to it.
+    fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64, has_labels: bool) {
         let visible = self.places.window(area, self.shown.len());
         let label = self
             .shown
             .iter()
             .map(|&i| ui::width(self.summary.places[i].label))
-            .max();
+            .max()
+            .filter(|_| has_labels);
         let columns = PlaceColumns::fit(ui::row_width(area), label.unwrap_or(0));
         let rows: Vec<Row> = self.shown[visible]
             .iter()
@@ -690,6 +769,15 @@ fn access_note(is_blocked: bool, denied: u64) -> Option<Span<'static>> {
         Style::new().fg(DIM)
     };
     Some(Span::styled(format!("  {note}"), style))
+}
+
+/// The folder and the one holding it, as in "app/node_modules", which tells places apart.
+fn short_path(path: &Path) -> String {
+    let parent = path.parent().and_then(Path::file_name);
+    match parent {
+        Some(parent) => format!("{}/{}", parent.to_string_lossy(), name_of(path)),
+        None => format::path(path),
+    }
 }
 
 fn name_of(path: &Path) -> String {

@@ -1,11 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+use ruim::categories::summarize;
+use ruim::overview::App;
 use ruim::tree::{Kind, Node};
 use ruim::ui::Browser;
+use ruim::volumes::Disk;
 
 fn browser() -> Browser {
     let modules = Node::with_children(
@@ -78,4 +81,60 @@ fn the_list_hands_its_item_counts_to_the_pane() {
     assert!(!wide[2].contains("4 items"), "{}", wide[2]);
     assert!(narrow[2].contains("4 items"), "{}", narrow[2]);
     assert!(!narrow.join("\n").contains("biggest inside"));
+}
+
+fn disk() -> Disk {
+    Disk {
+        name: "Test HD".to_string(),
+        total: 100_000,
+        free: 60_000,
+        purgeable: None,
+        system: 5_000,
+        data: 30_500,
+        scan_root: PathBuf::from("/"),
+        is_apfs: true,
+    }
+}
+
+fn app() -> App {
+    let modules = Node::with_children("node_modules", vec![Node::leaf("a.js", Kind::File, 3_000)]);
+    let project = Node::with_children(
+        "app",
+        vec![modules, Node::leaf("package.json", Kind::File, 500)],
+    );
+    let home = Node::with_children("ann", vec![Node::with_children("Documents", vec![project])]);
+    let root = Node::with_children("/", vec![Node::with_children("Users", vec![home])]);
+    let summary = summarize(&root, Path::new("/"), Path::new("/Users/ann"));
+    App::new(disk(), root, summary)
+}
+
+#[test]
+fn the_overview_pane_describes_a_group_and_its_biggest_places() {
+    let mut app = app();
+
+    let screen = text(120, 16, |frame| app.render(frame)).join("\n");
+
+    assert!(
+        screen.contains("─ Project dependencies & builds ─"),
+        "{screen}"
+    );
+    assert!(screen.contains("of the disk"), "{screen}");
+    assert!(screen.contains("node_modules, build output"), "{screen}");
+    assert!(screen.contains("biggest places"), "{screen}");
+    assert!(screen.contains("app/node_modules"), "{screen}");
+}
+
+#[test]
+fn the_places_pane_shows_what_a_place_holds() {
+    let mut app = app();
+    app.handle(&Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let screen = text(120, 16, |frame| app.render(frame)).join("\n");
+
+    assert!(screen.contains("─ node_modules/ ─"), "{screen}");
+    assert!(screen.contains("100% of Project"), "{screen}");
+    assert!(screen.contains("a.js"), "{screen}");
 }

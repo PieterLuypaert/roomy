@@ -799,6 +799,9 @@ pub(crate) fn fit_end(text: &str, room: usize) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }
+    if room == 0 {
+        return String::new();
+    }
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(room.saturating_sub(1)).collect();
     let is_mid_word = chars.next().is_some_and(|next| !next.is_whitespace());
