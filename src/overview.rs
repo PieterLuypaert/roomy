@@ -34,19 +34,19 @@ const PALETTE: [Color; 7] = [
 const OTHER: Color = Color::Indexed(245);
 const SYSTEM: Color = Color::Indexed(250);
 const HIDDEN: Color = Color::Indexed(242);
-const OVERVIEW_KEYS: [(&str, &str); 4] = [
+const OVERVIEW_KEYS: [(&str, &str); 5] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("b", "browse all"),
+    ("?", "all keys"),
     ("q", "quit"),
 ];
-const PLACE_KEYS: [(&str, &str); 7] = [
+const PLACE_KEYS: [(&str, &str); 6] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("←", "back"),
-    ("o", "finder"),
-    ("y", "copy path"),
     ("d", "trash"),
+    ("?", "all keys"),
     ("q", "quit"),
 ];
 

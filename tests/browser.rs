@@ -369,3 +369,18 @@ fn question_mark_shows_every_key_and_any_key_closes_it() {
     assert_eq!(browser.selected().unwrap().label(), "movie.mp4");
     assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Quit);
 }
+
+#[test]
+fn the_key_row_keeps_all_keys_and_quit_when_it_runs_out_of_room() {
+    let mut browser = sample();
+
+    let wide = screen(&mut browser).pop().unwrap();
+    let narrow = screen_of(&mut browser, 50, 10).pop().unwrap();
+
+    assert!(wide.contains("trash") && !wide.contains("finder"), "{wide}");
+    assert!(
+        narrow.contains("all keys") && narrow.contains("quit"),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("trash"), "{narrow}");
+}

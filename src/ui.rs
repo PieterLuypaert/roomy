@@ -34,14 +34,15 @@ const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 const SEPARATOR: &str = " › ";
 pub(crate) const STOP_KEYS: [(&str, &str); 1] = [("q", "stop")];
-const KEYS: [(&str, &str); 8] = [
+/// The key that shows all the others, which the key row keeps when it runs out of room.
+const HELP_KEY: &str = "?";
+const KEYS: [(&str, &str); 7] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("←", "back"),
     ("s", "sort"),
-    ("o", "finder"),
-    ("y", "copy path"),
     ("d", "trash"),
+    (HELP_KEY, "all keys"),
     ("q", "quit"),
 ];
 
@@ -954,13 +955,14 @@ pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
         return;
     };
     let cost = |(key, action): &(&str, &str)| width(key) + width(action) + 5;
-    let mut used = 1 + cost(last);
+    let room = area.width.saturating_sub(1 + cost(last));
+    let mut shown: Vec<&(&str, &str)> = rest.iter().collect();
+    while shown.iter().map(|hint| cost(hint)).sum::<u16>() > room {
+        let keep_help = shown.iter().rposition(|(key, _)| *key != HELP_KEY);
+        shown.remove(keep_help.unwrap_or(shown.len() - 1));
+    }
     let mut spans = vec![Span::raw(" ")];
-    for hint in rest {
-        used += cost(hint);
-        if used > area.width {
-            break;
-        }
+    for hint in shown {
         spans.extend(key_hint(hint, "  "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
