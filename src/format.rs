@@ -47,6 +47,21 @@ pub fn items(n: u64) -> String {
     }
 }
 
+pub fn access(is_blocked: bool, denied: u64) -> Option<&'static str> {
+    match (is_blocked, denied) {
+        (_, 0) => None,
+        (true, _) => Some("no access"),
+        (false, _) => Some("partly hidden"),
+    }
+}
+
+pub fn places(n: usize) -> String {
+    match n {
+        1 => "1 place".to_string(),
+        n => format!("{} places", count(n as u64)),
+    }
+}
+
 pub fn percent(share: f64) -> String {
     match share {
         s if s <= 0.0 => String::new(),
