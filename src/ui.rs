@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -12,12 +12,14 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::actions::{self, Trasher};
 use crate::format;
 use crate::scan::{self, Progress};
 use crate::tree::{Kind, Node};
+use crate::volumes;
 
 pub(crate) const TICK: Duration = Duration::from_millis(100);
 // Clicks, wheel and drags in SGR form, without the any-motion tracking that floods redraws.
@@ -153,10 +155,12 @@ impl Sort {
     }
 
     fn order(self, node: &Node) -> Vec<usize> {
-        let mut rows: Vec<usize> = (0..node.children.len()).collect();
         let children = &node.children;
+        let mut rows: Vec<usize> = (0..children.len())
+            .filter(|&i| !children[i].is_trashed)
+            .collect();
         match self {
-            Sort::Size => {}
+            Sort::Size => rows.sort_by_key(|&i| std::cmp::Reverse(children[i].size)),
             Sort::Name => rows.sort_by_cached_key(|&i| children[i].label().to_lowercase()),
             Sort::Items => rows.sort_by_key(|&i| std::cmp::Reverse(children[i].items)),
         }
@@ -175,6 +179,9 @@ pub struct Browser {
     denied: u64,
     unreadable: u64,
     status: Option<String>,
+    pending: Option<usize>,
+    trasher: Trasher,
+    trashed: u64,
 }
 
 impl Browser {
@@ -192,9 +199,41 @@ impl Browser {
             denied,
             unreadable,
             status: None,
+            pending: None,
+            trasher: actions::trash,
+            trashed: 0,
         };
         browser.show(None);
         browser
+    }
+
+    pub fn with_trasher(mut self, trasher: Trasher) -> Self {
+        self.trasher = trasher;
+        self
+    }
+
+    pub fn take_trashed(&mut self) -> u64 {
+        std::mem::take(&mut self.trashed)
+    }
+
+    pub fn trash(&mut self, trail: &[usize], path: &Path) -> io::Result<u64> {
+        let size = match self.root.get(trail) {
+            Some(node) if !trail.is_empty() && !node.is_trashed => node.size,
+            _ => return Err(io::Error::other("that entry is no longer there")),
+        };
+        (self.trasher)(path)?;
+        self.root.trash(trail);
+        if self.trail.starts_with(trail) {
+            self.trail.truncate(trail.len() - 1);
+            self.floor = self.floor.min(self.trail.len());
+        }
+        self.denied = self.root.count_where(|node| node.is_denied);
+        self.unreadable = self.root.count_where(|node| node.is_unreadable);
+        let index = self.cursor.index;
+        self.show(None);
+        self.cursor
+            .reset(index.min(self.rows.len().saturating_sub(1)));
+        Ok(size)
     }
 
     pub fn root(&self) -> &Node {
@@ -243,6 +282,7 @@ impl Browser {
                 self.status = None;
                 self.on_key(*key)
             }
+            Event::Mouse(_) if self.pending.is_some() => Outcome::Continue,
             Event::Mouse(mouse) => {
                 if is_click(mouse) {
                     self.status = None;
@@ -301,6 +341,12 @@ impl Browser {
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Outcome {
+        if let Some(child) = self.pending.take() {
+            if is_yes(key.code) {
+                self.confirm(child);
+            }
+            return Outcome::Continue;
+        }
         if is_quit_key(key) {
             return Outcome::Quit;
         }
@@ -313,9 +359,52 @@ impl Browser {
                 return self.back();
             }
             KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('o') => self.act(actions::reveal, "Showed it in the Finder."),
+            KeyCode::Char('y') => self.act(actions::copy, "Copied the path."),
+            KeyCode::Char('d') | KeyCode::Delete => self.ask(),
             _ => {}
         }
         Outcome::Continue
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        Some(self.path().join(&*self.selected()?.name))
+    }
+
+    fn act(&mut self, action: fn(&Path) -> io::Result<()>, done: &str) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        self.status = Some(match action(&path) {
+            Ok(()) => done.to_string(),
+            Err(err) => format!("That did not work: {err}"),
+        });
+    }
+
+    fn ask(&mut self) {
+        let Some(child) = self.selected_child() else {
+            return;
+        };
+        let path = self.path().join(&*self.current().children[child].name);
+        match trash_refusal(&self.current().children[child], &path) {
+            Some(reason) => self.status = Some(reason),
+            None => self.pending = Some(child),
+        }
+    }
+
+    fn confirm(&mut self, child: usize) {
+        let mut trail = self.trail.clone();
+        trail.push(child);
+        let node = self.root.descend(&trail);
+        let (name, size) = (node.label().into_owned(), node.size);
+        let path = self.path().join(&*node.name);
+        self.status = Some(match self.trash(&trail, &path) {
+            Ok(_) => {
+                self.trashed += size;
+                trashed_message(&name, size)
+            }
+            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+        });
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
@@ -334,6 +423,9 @@ impl Browser {
             ("→", "open"),
             ("←", "back"),
             ("s", sort.as_str()),
+            ("o", "finder"),
+            ("y", "copy path"),
+            ("d", "trash"),
             ("q", "quit"),
         ];
         footer(
@@ -343,11 +435,16 @@ impl Browser {
             self.status.as_deref(),
             &self.trouble(),
         );
+        if let Some(child) = self.pending {
+            let node = &self.current().children[child];
+            let path = format::path(&self.path().join(&*node.name));
+            confirm_trash(frame, &node.label(), &path, node.size, node.items);
+        }
     }
 
     fn render_rows(&mut self, frame: &mut Frame, area: Rect) {
         let current = self.root.descend(&self.trail);
-        if current.children.is_empty() {
+        if self.rows.is_empty() {
             let note = match current {
                 n if n.is_denied => "No access",
                 n if n.is_unreadable => "Could not be read",
@@ -377,6 +474,80 @@ impl Browser {
         }
         parts.join(" · ")
     }
+}
+
+pub(crate) fn trash_refusal(node: &Node, path: &Path) -> Option<String> {
+    let name = node.label();
+    if actions::is_protected(path, &volumes::home()) {
+        Some(format!(
+            "ruim will not move {name}: your home folder lives there."
+        ))
+    } else if node.is_denied {
+        Some(format!(
+            "ruim cannot see inside {name}, so it leaves it alone."
+        ))
+    } else if node.is_mount {
+        Some(format!("{name} is another disk; ruim does not move disks."))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn trashed_message(name: &str, size: u64) -> String {
+    format!(
+        "Moved {name} ({}) to the Trash. Empty the Trash to free the space.",
+        format::size(size)
+    )
+}
+
+pub(crate) fn is_yes(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Char('y' | 'Y'))
+}
+
+pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64, items: u64) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(72);
+    let [row] = Layout::vertical([Constraint::Length(7)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(row);
+    let lines = popup_lines(
+        name,
+        path,
+        size,
+        items,
+        usize::from(width.saturating_sub(6)),
+    );
+    let block = Block::bordered()
+        .title(" Move to the Trash? ")
+        .border_style(Style::new().fg(WARN))
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+fn popup_lines(name: &str, path: &str, size: u64, items: u64, room: usize) -> Vec<Line<'static>> {
+    let mut amount = format::size(size);
+    if items > 0 {
+        amount = format!("{amount} · {}", format::items(items));
+    }
+    vec![
+        Line::styled(
+            fit_start(name, room),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(fit_start(path, room), Style::new().fg(DIM)),
+        Line::raw(amount),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" y ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled("move to Trash   ", Style::new().fg(DIM)),
+            Span::styled(" any other key ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled("keep it", Style::new().fg(DIM)),
+        ]),
+    ]
 }
 
 fn refusal(node: &Node) -> Option<String> {

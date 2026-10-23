@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod categories;
 pub mod cli;
 pub mod format;
