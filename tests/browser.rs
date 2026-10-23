@@ -58,14 +58,14 @@ fn shows_the_folder_biggest_first() {
 
     let lines = screen(&mut browser);
 
-    assert!(lines[0].contains("/data"), "{}", lines[0]);
+    assert!(lines[0].contains("/ › data"), "{}", lines[0]);
     assert!(lines[0].contains("10.0 kB · 5 items"), "{}", lines[0]);
     assert!(
         lines[2].contains("6.0 kB") && lines[2].contains("60%") && lines[2].contains("movie.mp4")
     );
     assert!(lines[3].contains("Documents/") && lines[3].contains("2 items"));
     assert!(lines[4].contains("locked/  no access"));
-    assert!(lines[9].contains("1 no access"));
+    assert!(lines[8].contains("1 no access"), "{}", lines[8]);
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn sorting_by_name_keeps_the_selection() {
     assert!(lines[2].contains("Documents/"));
     assert!(lines[4].contains("movie.mp4"));
     assert_eq!(browser.selected().unwrap().label(), "Documents");
-    assert!(lines[9].contains("name"));
+    assert!(lines[1].contains("by name"), "{}", lines[1]);
 }
 
 #[test]
@@ -159,11 +159,11 @@ fn scrolls_to_keep_the_cursor_on_screen() {
     press(&mut browser, KeyCode::End);
     let lines = screen(&mut browser);
 
-    assert!(lines[8].contains("file-00"), "{}", lines[8]);
+    assert!(lines[7].contains("file-00"), "{}", lines[7]);
     assert_eq!(browser.selected().unwrap().label(), "file-00");
 
     click(&mut browser, 2);
-    assert_eq!(browser.selected().unwrap().label(), "file-06");
+    assert_eq!(browser.selected().unwrap().label(), "file-05");
 }
 
 #[test]

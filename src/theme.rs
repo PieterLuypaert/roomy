@@ -2,18 +2,24 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType};
 
 pub(crate) const ACCENT: Color = Color::Indexed(75);
 pub(crate) const DIM: Color = Color::Indexed(244);
 pub(crate) const WARN: Color = Color::Indexed(203);
 pub(crate) const TRACK: Color = Color::Indexed(240);
+pub(crate) const BORDER: Color = Color::Indexed(238);
 pub(crate) const SELECTION: Style = Style::new()
-    .fg(Color::Indexed(255))
-    .bg(Color::Indexed(237))
+    .bg(Color::Indexed(236))
     .add_modifier(Modifier::BOLD);
 pub(crate) const BADGE: Style = Style::new()
     .fg(Color::Black)
     .bg(ACCENT)
+    .add_modifier(Modifier::BOLD);
+const KEYCAP: Style = Style::new()
+    .fg(Color::Indexed(252))
+    .bg(Color::Indexed(238))
     .add_modifier(Modifier::BOLD);
 const BIG: Color = Color::Indexed(255);
 const IMAGE: Color = Color::Indexed(176);
@@ -22,6 +28,40 @@ const AUDIO: Color = Color::Indexed(80);
 const ARCHIVE: Color = Color::Indexed(209);
 const DOCUMENT: Color = Color::Indexed(187);
 const CODE: Color = Color::Indexed(150);
+
+pub(crate) fn panel<'a>(title: &str) -> Block<'a> {
+    let title = Line::from(vec![
+        Span::styled("─", Style::new().fg(BORDER)),
+        Span::styled(
+            format!(" {title} "),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(BORDER))
+        .title(title)
+}
+
+/// A quiet title for the right end of a panel's border.
+pub(crate) fn aside(text: &str) -> Line<'static> {
+    if text.is_empty() {
+        return Line::default();
+    }
+    Line::from(vec![
+        Span::styled(format!(" {text} "), Style::new().fg(DIM)),
+        Span::styled("─", Style::new().fg(BORDER)),
+    ])
+    .right_aligned()
+}
+
+pub(crate) fn keycap(key: &str) -> Span<'static> {
+    Span::styled(format!(" {key} "), KEYCAP)
+}
+
+pub(crate) fn marker() -> Line<'static> {
+    Line::styled("▌", Style::new().fg(ACCENT))
+}
 
 /// Brighter the more of its folder an entry takes.
 pub(crate) fn heat(share: f64) -> Color {
