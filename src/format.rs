@@ -38,6 +38,13 @@ pub fn count(n: u64) -> String {
     out
 }
 
+pub fn items(n: u64) -> String {
+    match n {
+        1 => "1 item".to_string(),
+        n => format!("{} items", count(n)),
+    }
+}
+
 pub fn percent(share: f64) -> String {
     match share {
         s if s <= 0.0 => String::new(),
@@ -87,6 +94,12 @@ mod tests {
         assert_eq!(count(1000), "1,000");
         assert_eq!(count(312_402), "312,402");
         assert_eq!(count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn one_item_is_not_plural() {
+        assert_eq!(items(1), "1 item");
+        assert_eq!(items(2_400), "2,400 items");
     }
 
     #[test]

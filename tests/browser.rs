@@ -1,0 +1,167 @@
+use std::path::PathBuf;
+
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+
+use ruim::tree::{Kind, Node};
+use ruim::ui::{Browser, Outcome};
+
+fn sample() -> Browser {
+    let mut locked = Node::dir("locked", 0);
+    locked.is_denied = true;
+    let documents = Node::with_children(
+        "Documents",
+        vec![
+            Node::leaf("report.pdf", Kind::File, 3_000),
+            Node::leaf("notes.txt", Kind::File, 1_000),
+        ],
+    );
+    let root = Node::with_children(
+        "/data",
+        vec![
+            documents,
+            Node::leaf("movie.mp4", Kind::File, 6_000),
+            locked,
+        ],
+    );
+    Browser::new(root, PathBuf::from("/data"))
+}
+
+fn screen(browser: &mut Browser) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(90, 10)).unwrap();
+    terminal.draw(|frame| browser.render(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..10)
+        .map(|y| (0..90).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect()
+}
+
+fn press(browser: &mut Browser, code: KeyCode) -> Outcome {
+    browser.handle(&Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+}
+
+fn click(browser: &mut Browser, row: u16) {
+    browser.handle(&Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 20,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }));
+}
+
+#[test]
+fn shows_the_folder_biggest_first() {
+    let mut browser = sample();
+
+    let lines = screen(&mut browser);
+
+    assert!(lines[0].contains("/data"), "{}", lines[0]);
+    assert!(lines[0].contains("10.0 kB · 5 items"), "{}", lines[0]);
+    assert!(
+        lines[2].contains("6.0 kB") && lines[2].contains("60%") && lines[2].contains("movie.mp4")
+    );
+    assert!(lines[3].contains("Documents/") && lines[3].contains("2 items"));
+    assert!(lines[4].contains("locked/  no access"));
+    assert!(lines[9].contains("1 no access"));
+}
+
+#[test]
+fn opens_a_folder_and_comes_back_to_it() {
+    let mut browser = sample();
+
+    press(&mut browser, KeyCode::Down);
+    press(&mut browser, KeyCode::Enter);
+
+    assert_eq!(browser.path(), PathBuf::from("/data/Documents"));
+    let lines = screen(&mut browser);
+    assert!(lines[2].contains("report.pdf"));
+    assert!(lines[3].contains("notes.txt"));
+
+    press(&mut browser, KeyCode::Left);
+
+    assert_eq!(browser.path(), PathBuf::from("/data"));
+    assert_eq!(browser.selected().unwrap().label(), "Documents");
+}
+
+#[test]
+fn explains_why_a_locked_folder_does_not_open() {
+    let mut browser = sample();
+
+    press(&mut browser, KeyCode::End);
+    press(&mut browser, KeyCode::Enter);
+
+    assert_eq!(browser.path(), PathBuf::from("/data"));
+    assert!(browser.status().unwrap().contains("No access to locked"));
+    let footer = screen(&mut browser).pop().unwrap();
+    assert!(
+        footer.contains("No access to locked") && !footer.contains("quit"),
+        "{footer}"
+    );
+}
+
+#[test]
+fn sorting_by_name_keeps_the_selection() {
+    let mut browser = sample();
+    press(&mut browser, KeyCode::Down);
+
+    press(&mut browser, KeyCode::Char('s'));
+
+    let lines = screen(&mut browser);
+    assert!(lines[2].contains("Documents/"));
+    assert!(lines[4].contains("movie.mp4"));
+    assert_eq!(browser.selected().unwrap().label(), "Documents");
+    assert!(lines[9].contains("name"));
+}
+
+#[test]
+fn a_click_selects_and_a_second_click_opens() {
+    let mut browser = sample();
+    screen(&mut browser);
+
+    click(&mut browser, 3);
+    assert_eq!(browser.selected().unwrap().label(), "Documents");
+
+    click(&mut browser, 3);
+    assert_eq!(browser.path(), PathBuf::from("/data/Documents"));
+}
+
+#[test]
+fn q_quits() {
+    let mut browser = sample();
+
+    assert_eq!(press(&mut browser, KeyCode::Down), Outcome::Continue);
+    assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Quit);
+}
+
+#[test]
+fn long_item_counts_are_not_cut_off() {
+    let mut many = Node::dir("node_modules", 5_000);
+    many.items = 1_982_471;
+    let root = Node::with_children("/data", vec![many, Node::leaf("a.txt", Kind::File, 1)]);
+    let mut browser = Browser::new(root, PathBuf::from("/data"));
+
+    let lines = screen(&mut browser);
+
+    assert!(lines[2].contains("1,982,471 items"), "{}", lines[2]);
+}
+
+#[test]
+fn scrolls_to_keep_the_cursor_on_screen() {
+    let files = (0..50)
+        .map(|i| Node::leaf(format!("file-{i:02}"), Kind::File, 1_000 + i))
+        .collect();
+    let mut browser = Browser::new(Node::with_children("/data", files), PathBuf::from("/data"));
+    screen(&mut browser);
+
+    press(&mut browser, KeyCode::End);
+    let lines = screen(&mut browser);
+
+    assert!(lines[8].contains("file-00"), "{}", lines[8]);
+    assert_eq!(browser.selected().unwrap().label(), "file-00");
+
+    click(&mut browser, 2);
+    assert_eq!(browser.selected().unwrap().label(), "file-06");
+}
