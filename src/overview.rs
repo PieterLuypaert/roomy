@@ -15,8 +15,9 @@ use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
 use crate::format;
 use crate::scan::{self, Progress};
+use crate::theme::{ACCENT, DIM, SELECTION, TRACK, WARN};
 use crate::tree::Node;
-use crate::ui::{self, Browser, Cursor, DIM, Outcome, Pointer, SELECTION, TRACK, WARN};
+use crate::ui::{self, Browser, Cursor, Outcome, Pointer};
 use crate::volumes::{self, Disk};
 
 const PALETTE: [Color; 7] = [
@@ -745,7 +746,7 @@ fn waiting(frame: &mut Frame, disk: &Disk, progress: &Progress, elapsed: Duratio
     let [bar, rest] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
     let scanned = progress.bytes().min(disk.data);
     let parts = [
-        (scanned, ui::ACCENT, false),
+        (scanned, ACCENT, false),
         (disk.data - scanned, DIM, false),
         (disk.system, SYSTEM, false),
         (disk.other(), SYSTEM, false),

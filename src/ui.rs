@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{
     MouseEventKind,
 };
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
 use ratatui::{DefaultTerminal, Frame};
@@ -18,6 +18,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::actions::{self, Trasher};
 use crate::format;
 use crate::scan::{self, Progress};
+use crate::theme::{self, ACCENT, BADGE, DIM, SELECTION, TRACK, WARN};
 use crate::tree::{Kind, Node};
 use crate::volumes;
 
@@ -27,18 +28,6 @@ const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-pub(crate) const ACCENT: Color = Color::Indexed(75);
-pub(crate) const DIM: Color = Color::Indexed(244);
-pub(crate) const WARN: Color = Color::Indexed(203);
-pub(crate) const TRACK: Color = Color::Indexed(240);
-pub(crate) const SELECTION: Style = Style::new()
-    .fg(Color::Indexed(255))
-    .bg(Color::Indexed(237))
-    .add_modifier(Modifier::BOLD);
-const BADGE: Style = Style::new()
-    .fg(Color::Black)
-    .bg(ACCENT)
-    .add_modifier(Modifier::BOLD);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -628,7 +617,7 @@ pub(crate) fn bar_line(share: f64, width: u16) -> Line<'static> {
     let filled = bar(share, width);
     let rest = usize::from(width).saturating_sub(filled.chars().count());
     Line::from(vec![
-        Span::styled(filled, Style::new().fg(heat(share))),
+        Span::styled(filled, Style::new().fg(theme::heat(share))),
         Span::styled("·".repeat(rest), Style::new().fg(TRACK)),
     ])
 }
@@ -682,15 +671,6 @@ fn bar(share: f64, width: u16) -> String {
         bar.push(PARTIAL[eighths % 8]);
     }
     bar
-}
-
-fn heat(share: f64) -> Color {
-    match share {
-        s if s >= 0.5 => Color::Indexed(203),
-        s if s >= 0.2 => Color::Indexed(209),
-        s if s >= 0.05 => Color::Indexed(221),
-        _ => Color::Indexed(110),
-    }
 }
 
 pub(crate) fn width(text: &str) -> u16 {
