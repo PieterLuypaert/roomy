@@ -148,6 +148,25 @@ fn long_item_counts_are_not_cut_off() {
 }
 
 #[test]
+fn a_long_folder_name_leaves_room_for_the_sort_order() {
+    let long = "a-folder-with-a-name-far-too-long-for-the-border-of-the-panel-that-it-gives-a-title-to-here";
+    let inside = Node::with_children(long, vec![Node::leaf("a.txt", Kind::File, 1)]);
+    let mut browser = Browser::new(
+        Node::with_children("/data", vec![inside]),
+        PathBuf::from("/data"),
+    );
+    press(&mut browser, KeyCode::Enter);
+
+    let lines = screen(&mut browser);
+
+    assert!(
+        lines[1].contains("…") && lines[1].contains("by size"),
+        "{}",
+        lines[1]
+    );
+}
+
+#[test]
 fn scrolls_to_keep_the_cursor_on_screen() {
     let files = (0..50)
         .map(|i| Node::leaf(format!("file-{i:02}"), Kind::File, 1_000 + i))

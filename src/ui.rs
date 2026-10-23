@@ -465,8 +465,11 @@ impl Browser {
         );
         let crumbs = path_crumbs(&format::path(&self.path()));
         header(frame, top, &crumbs, &total);
-        let block = theme::panel(crumbs.last().map_or("", String::as_str))
-            .title(theme::aside(&format!("by {}", self.sort.label())))
+        let sort = format!("by {}", self.sort.label());
+        let room = usize::from(body.width.saturating_sub(width(&sort) + 10));
+        let name = fit_end(crumbs.last().map_or("", String::as_str), room);
+        let block = theme::panel(&name)
+            .title(theme::aside(&sort))
             .title_bottom(theme::aside(&self.trouble()));
         let inner = framed(frame, body, block);
         let [list, strip] = make_room(inner, self.toast.as_ref());
@@ -1073,6 +1076,7 @@ pub(crate) fn scanning(
     let [card] = Layout::horizontal([Constraint::Length(card_width)])
         .flex(Flex::Center)
         .areas(row);
+    let label = fit_start(label, usize::from(card_width.saturating_sub(16)));
     let block = theme::panel(&format!("Scanning {label}")).padding(Padding::horizontal(2));
     frame.render_widget(Paragraph::new(lines).block(block), card);
 }
