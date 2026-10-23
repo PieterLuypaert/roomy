@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::volumes;
+
 const UNITS: [&str; 6] = ["kB", "MB", "GB", "TB", "PB", "EB"];
 
 pub const ACCESS_HINT: &str = if cfg!(target_os = "macos") {
@@ -62,6 +64,7 @@ pub fn share(part: u64, whole: u64) -> f64 {
 }
 
 pub fn path(path: &Path) -> String {
+    let path = volumes::logical(path);
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty());
     match home.and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
