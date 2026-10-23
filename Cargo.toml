@@ -1,0 +1,12 @@
+[package]
+name = "ruim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "See where your disk space goes, right in the terminal"
+license = "MIT"
+repository = "https://github.com/PieterLuypaert/ruim"
+readme = "README.md"
+
+[profile.release]
+strip = true
