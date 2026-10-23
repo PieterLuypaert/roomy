@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod categories;
 pub mod cli;
+mod detail;
 pub mod format;
 pub mod overview;
 pub mod print;

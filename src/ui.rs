@@ -18,6 +18,7 @@ use ratatui::widgets::{
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::actions::{self, Trasher};
+use crate::detail::{self, Detail};
 use crate::format;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, BADGE, DIM, DONE, SELECTION, TRACK, WARN};
@@ -474,6 +475,8 @@ impl Browser {
     pub fn render(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = screen(frame.area());
         let crumbs = self.crumbs();
+        let of = crumbs.last().map_or("", String::as_str);
+        let (body, side) = detail::split(body, || self.detail(of));
         header(frame, top, &crumbs, &format::size(self.current().size));
         let count = self.count();
         let room = usize::from(body.width.saturating_sub(width(&count) + 10));
@@ -487,7 +490,10 @@ impl Browser {
         }
         let inner = framed(frame, body, block);
         let [list, strip] = make_room(inner, self.toast.as_ref());
-        self.render_rows(frame, list);
+        self.render_rows(frame, list, side.is_none());
+        if let Some((side, detail)) = &side {
+            detail::render(frame, *side, detail);
+        }
         footer(frame, bottom, &KEYS);
         if let Some(toast) = &self.toast {
             show_toast(frame, strip, toast);
@@ -508,7 +514,13 @@ impl Browser {
         }
     }
 
-    fn render_rows(&mut self, frame: &mut Frame, area: Rect) {
+    /// The pane for the selected entry, as part of the folder called `of`.
+    fn detail(&self, of: &str) -> Option<Detail> {
+        let node = self.selected()?;
+        Some(detail::of_node(node, node.size, of, self.current().size))
+    }
+
+    fn render_rows(&mut self, frame: &mut Frame, area: Rect, has_items: bool) {
         let current = self.root.descend(&self.trail);
         if self.rows.is_empty() {
             let note = match current {
@@ -523,7 +535,7 @@ impl Browser {
             return;
         }
         let visible = self.cursor.window(area, self.rows.len());
-        let columns = Columns::fit(row_width(area), current);
+        let columns = Columns::fit(row_width(area), current, has_items);
         let rows = self.rows[visible]
             .iter()
             .map(|&child| row(&current.children[child], current.size, &columns));
@@ -636,7 +648,7 @@ struct Columns {
 }
 
 impl Columns {
-    fn fit(width: u16, node: &Node) -> Self {
+    fn fit(width: u16, node: &Node, has_items: bool) -> Self {
         let bar = bar_width(width);
         let most = node
             .children
@@ -644,7 +656,7 @@ impl Columns {
             .map(|child| child.items)
             .max()
             .unwrap_or(0);
-        let items = if bar == 0 || most == 0 {
+        let items = if !has_items || bar == 0 || most == 0 {
             0
         } else {
             self::width(&format::items(most))
@@ -760,7 +772,7 @@ fn scrolled(offset: usize, cursor: usize, height: usize) -> usize {
     }
 }
 
-fn bar(share: f64, width: u16) -> String {
+pub(crate) fn bar(share: f64, width: u16) -> String {
     let eighths = (share.clamp(0.0, 1.0) * f64::from(width) * 8.0).round() as usize;
     let mut bar = "█".repeat(eighths / 8);
     if !eighths.is_multiple_of(8) {
@@ -787,6 +799,9 @@ pub(crate) fn fit_end(text: &str, room: usize) -> String {
     if text.chars().count() <= room {
         return text.to_string();
     }
+    if room == 0 {
+        return String::new();
+    }
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(room.saturating_sub(1)).collect();
     let is_mid_word = chars.next().is_some_and(|next| !next.is_whitespace());
@@ -798,7 +813,7 @@ pub(crate) fn fit_end(text: &str, room: usize) -> String {
 }
 
 /// Splits text into lines of at most `room` characters, breaking between words.
-fn wrap(text: &str, room: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, room: usize) -> Vec<String> {
     let room = room.max(1);
     let words = text.split_whitespace().flat_map(|word| {
         let chars: Vec<char> = word.chars().collect();

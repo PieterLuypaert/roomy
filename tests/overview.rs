@@ -119,7 +119,8 @@ fn the_overview_lists_groups_and_disk_parts() {
     assert!(text.contains("Apps"));
     assert!(text.contains("Project dependencies & builds"));
     assert!(text.contains("Hidden from ruim"));
-    assert!(text.contains("2.0 kB more can be freed"));
+    press(&mut app, KeyCode::End);
+    assert!(screen(&mut app).contains("2.0 kB more can be freed"));
 }
 
 #[test]
