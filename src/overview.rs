@@ -780,22 +780,23 @@ fn session(
 }
 
 fn waiting(frame: &mut Frame, disk: &Disk, progress: &Progress, elapsed: Duration) {
-    let [top, body, _] = ui::screen(frame.area());
+    let [top, body, bottom] = ui::screen(frame.area());
     ui::header(
         frame,
         top,
         std::slice::from_ref(&disk.name),
         &disk_summary(disk),
     );
-    let [bar, rest] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
     let scanned = progress.bytes().min(disk.data);
     let parts = [
         (scanned, ACCENT, false),
-        (disk.data - scanned, DIM, false),
+        (disk.data - scanned, TRACK, false),
         (disk.system, SYSTEM, false),
         (disk.other(), SYSTEM, false),
         (disk.free, TRACK, true),
     ];
-    frame.render_widget(Paragraph::new(stacked(&parts, bar.width)), bar);
-    ui::scanning(frame, rest, "the whole disk", progress, elapsed);
+    ui::scanning(frame, body, "the whole disk", progress, elapsed, |width| {
+        Some(stacked(&parts, width))
+    });
+    ui::footer(frame, bottom, &ui::STOP_KEYS);
 }

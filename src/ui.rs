@@ -31,6 +31,7 @@ const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 const SEPARATOR: &str = " › ";
+pub(crate) const STOP_KEYS: [(&str, &str); 1] = [("q", "stop")];
 const KEYS: [(&str, &str); 8] = [
     ("↑↓", "move"),
     ("→", "open"),
@@ -961,8 +962,14 @@ fn session(
     scanner: JoinHandle<io::Result<Node>>,
 ) -> io::Result<()> {
     let label = format::path(&path);
+    let crumbs = path_crumbs(&label);
     let scanned = wait(terminal, progress, scanner, |frame, elapsed| {
-        scanning(frame, frame.area(), &label, progress, elapsed);
+        let [top, body, bottom] = screen(frame.area());
+        header(frame, top, &crumbs, "");
+        scanning(frame, body, &label, progress, elapsed, |width| {
+            Some(sweep(elapsed, width))
+        });
+        footer(frame, bottom, &STOP_KEYS);
     })?;
     let Some(root) = scanned else {
         return Ok(());
@@ -1028,49 +1035,67 @@ pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
     is_ctrl_c || key.code == KeyCode::Char('q')
 }
 
+/// A card in the middle of `area` that counts what the scan has seen so far, with the
+/// line `gauge` draws for the room inside the card, if any.
 pub(crate) fn scanning(
     frame: &mut Frame,
     area: Rect,
     label: &str,
     progress: &Progress,
     elapsed: Duration,
+    gauge: impl FnOnce(u16) -> Option<Line<'static>>,
 ) {
-    let has_badge = area.y == frame.area().y;
-    let lines = progress_lines(label, progress, elapsed, area.width, has_badge);
-    let [middle] = Layout::vertical([Constraint::Length(lines.len() as u16)])
+    let card_width = area.width.saturating_sub(4).min(68);
+    let room = card_width.saturating_sub(6);
+    let mut lines = progress_lines(progress, elapsed, room);
+    if let Some(gauge) = gauge(room) {
+        lines.splice(3..3, [gauge, Line::default()]);
+    }
+    let [row] = Layout::vertical([Constraint::Length(lines.len() as u16 + 2)])
         .flex(Flex::Center)
         .areas(area);
-    frame.render_widget(Paragraph::new(lines).centered(), middle);
+    let [card] = Layout::horizontal([Constraint::Length(card_width)])
+        .flex(Flex::Center)
+        .areas(row);
+    let block = theme::panel(&format!("Scanning {label}")).padding(Padding::horizontal(2));
+    frame.render_widget(Paragraph::new(lines).block(block), card);
 }
 
-fn progress_lines(
-    label: &str,
-    progress: &Progress,
-    elapsed: Duration,
-    width: u16,
-    has_badge: bool,
-) -> Vec<Line<'static>> {
+/// A block that slides to and fro while a scan has no end in sight.
+fn sweep(elapsed: Duration, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let block = (width / 6).max(1);
+    let room = width.saturating_sub(block).max(1);
+    let step = 2 * (elapsed.as_millis() / TICK.as_millis()) as usize % (2 * room);
+    let start = if step > room { 2 * room - step } else { step };
+    Line::from(vec![
+        Span::styled("·".repeat(start), Style::new().fg(TRACK)),
+        Span::styled("█".repeat(block), Style::new().fg(ACCENT)),
+        Span::styled(
+            "·".repeat(width.saturating_sub(start + block)),
+            Style::new().fg(TRACK),
+        ),
+    ])
+}
+
+fn progress_lines(progress: &Progress, elapsed: Duration, room: u16) -> Vec<Line<'static>> {
     let spinner = SPINNER[(elapsed.as_millis() / TICK.as_millis()) as usize % SPINNER.len()];
-    let counts = format!(
-        "{} · {} · {:.1} s",
-        format::items(progress.items()),
-        format::size(progress.bytes()),
-        elapsed.as_secs_f64()
-    );
-    let current = fit_start(
-        &format::path(&progress.current()),
-        usize::from(width).saturating_sub(4),
-    );
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(DIM);
+    let counts = Line::from(vec![
+        Span::styled(format!("{spinner}  "), Style::new().fg(ACCENT)),
+        Span::styled(format::count(progress.items()), bold),
+        Span::styled(" items   ", dim),
+        Span::styled(format::size(progress.bytes()), bold),
+        Span::styled(format!("   {:.1} s", elapsed.as_secs_f64()), dim),
+    ]);
+    let current = fit_start(&format::path(&progress.current()), usize::from(room));
     vec![
-        Line::from(vec![
-            Span::styled(if has_badge { " ruim " } else { "" }, BADGE),
-            Span::raw(format!("  scanning {label} {spinner}")),
-        ]),
-        Line::raw(""),
-        Line::raw(counts),
-        Line::styled(current, Style::new().fg(DIM)),
-        Line::raw(""),
-        Line::styled("q to stop", Style::new().fg(DIM)),
+        Line::default(),
+        counts,
+        Line::default(),
+        Line::styled(current, dim),
+        Line::default(),
     ]
 }
 
