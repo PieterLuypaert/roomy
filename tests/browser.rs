@@ -165,3 +165,27 @@ fn scrolls_to_keep_the_cursor_on_screen() {
     click(&mut browser, 2);
     assert_eq!(browser.selected().unwrap().label(), "file-06");
 }
+
+#[test]
+fn jumping_to_a_locked_folder_shows_why_from_its_parent() {
+    let mut browser = sample();
+
+    browser.jump(vec![2]);
+
+    assert_eq!(browser.path(), PathBuf::from("/data"));
+    assert_eq!(browser.selected().unwrap().label(), "locked");
+    assert!(browser.status().unwrap().contains("No access to locked"));
+}
+
+#[test]
+fn a_click_clears_the_last_message() {
+    let mut browser = sample();
+    screen(&mut browser);
+    press(&mut browser, KeyCode::End);
+    press(&mut browser, KeyCode::Enter);
+    assert!(browser.status().is_some());
+
+    click(&mut browser, 2);
+
+    assert!(browser.status().is_none());
+}

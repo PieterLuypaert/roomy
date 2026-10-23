@@ -1,0 +1,626 @@
+use std::io;
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, MouseEvent};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
+use ratatui::{DefaultTerminal, Frame};
+
+use crate::categories::{self, Group, Place, Summary};
+use crate::format;
+use crate::scan::{self, Progress};
+use crate::tree::Node;
+use crate::ui::{self, Browser, Cursor, DIM, Outcome, Pointer, SELECTION, TRACK, WARN};
+use crate::volumes::{self, Disk};
+
+const PALETTE: [Color; 7] = [
+    Color::Indexed(68),
+    Color::Indexed(166),
+    Color::Indexed(35),
+    Color::Indexed(136),
+    Color::Indexed(168),
+    Color::Indexed(28),
+    Color::Indexed(104),
+];
+const OTHER: Color = Color::Indexed(245);
+const SYSTEM: Color = Color::Indexed(250);
+const HIDDEN: Color = Color::Indexed(242);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Group(Group),
+    Hidden,
+    System,
+    Reserved,
+    Free,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Slice {
+    pub part: Part,
+    pub size: u64,
+    pub places: usize,
+    pub denied: u64,
+    pub is_blocked: bool,
+}
+
+impl Slice {
+    pub fn name(&self) -> &'static str {
+        match self.part {
+            Part::Group(group) => group.name(),
+            Part::Hidden => "Hidden from ruim",
+            Part::System => "macOS",
+            Part::Reserved if cfg!(target_os = "macos") => "System volumes",
+            Part::Reserved => "Reserved",
+            Part::Free => "Free",
+        }
+    }
+
+    pub fn about(&self, disk: &Disk) -> String {
+        let text = match self.part {
+            Part::Group(group) => group.about(),
+            Part::Hidden if disk.is_apfs => {
+                "folders that need Full Disk Access, local snapshots and purgeable space"
+            }
+            Part::Hidden => "folders ruim may not read and filesystem metadata",
+            Part::System => "the sealed, read-only system volume",
+            Part::Reserved if disk.is_apfs => {
+                "Preboot, VM (swap and sleep image), Update and Recovery"
+            }
+            Part::Reserved => "blocks the filesystem keeps for root",
+            Part::Free => {
+                return disk.purgeable.map_or_else(String::new, |purgeable| {
+                    format!(
+                        "{} more can be freed by macOS when needed",
+                        format::size(purgeable)
+                    )
+                });
+            }
+        };
+        text.to_string()
+    }
+}
+
+pub fn slices(disk: &Disk, summary: &Summary) -> Vec<Slice> {
+    let mut slices: Vec<Slice> = summary
+        .totals
+        .iter()
+        .map(|total| Slice {
+            part: Part::Group(total.group),
+            size: total.size,
+            places: total.places,
+            denied: total.denied,
+            is_blocked: total.is_blocked,
+        })
+        .collect();
+    let fixed = [
+        (Part::Hidden, disk.data.saturating_sub(summary.size())),
+        (Part::System, disk.system),
+        (Part::Reserved, disk.other()),
+        (Part::Free, disk.free),
+    ];
+    for (part, size) in fixed {
+        if size > 0 || part == Part::Free {
+            slices.push(Slice {
+                part,
+                size,
+                places: 0,
+                denied: 0,
+                is_blocked: false,
+            });
+        }
+    }
+    slices
+}
+
+pub fn overcount(disk: &Disk, summary: &Summary) -> u64 {
+    summary.size().saturating_sub(disk.data)
+}
+
+pub fn scale(disk: &Disk, slices: &[Slice]) -> u64 {
+    disk.total.max(slices.iter().map(|slice| slice.size).sum())
+}
+
+pub fn overcount_note(extra: u64) -> String {
+    format!("{} counted twice (APFS clones)", format::size(extra))
+}
+
+pub fn disk_summary(disk: &Disk) -> String {
+    format!(
+        "{} · {} used · {} free",
+        format::size(disk.total),
+        format::size(disk.used()),
+        format::size(disk.free)
+    )
+}
+
+pub struct Scanned {
+    pub root: Node,
+    pub summary: Summary,
+    pub purgeable: Option<u64>,
+}
+
+pub fn scan_disk(disk: &Disk, progress: &Progress) -> io::Result<Scanned> {
+    let root = scan::scan(&disk.scan_root, progress)?;
+    let summary = categories::summarize(&root, &disk.scan_root, &volumes::home());
+    let purgeable = if disk.is_apfs {
+        volumes::purgeable(disk.free)
+    } else {
+        None
+    };
+    Ok(Scanned {
+        root,
+        summary,
+        purgeable,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Overview,
+    Places,
+    Browser,
+}
+
+pub struct App {
+    disk: Disk,
+    summary: Summary,
+    slices: Vec<Slice>,
+    colors: Vec<Group>,
+    browser: Browser,
+    overview: Cursor,
+    places: Cursor,
+    shown: Vec<usize>,
+    group: Option<Group>,
+    screen: Screen,
+    came_from: Screen,
+    status: Option<String>,
+}
+
+impl App {
+    pub fn new(disk: Disk, root: Node, summary: Summary) -> Self {
+        let slices = slices(&disk, &summary);
+        let colors = summary.totals.iter().map(|total| total.group).collect();
+        let browser = Browser::new(root, disk.scan_root.clone());
+        App {
+            disk,
+            summary,
+            slices,
+            colors,
+            browser,
+            overview: Cursor::default(),
+            places: Cursor::default(),
+            shown: Vec::new(),
+            group: None,
+            screen: Screen::Overview,
+            came_from: Screen::Overview,
+            status: None,
+        }
+    }
+
+    pub fn browser(&self) -> Option<&Browser> {
+        (self.screen == Screen::Browser).then_some(&self.browser)
+    }
+
+    pub fn group(&self) -> Option<Group> {
+        self.group.filter(|_| self.screen == Screen::Places)
+    }
+
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    pub fn handle(&mut self, event: &Event) -> Outcome {
+        if self.screen == Screen::Browser {
+            return match self.browser.handle(event) {
+                Outcome::Leave => {
+                    self.screen = self.came_from;
+                    Outcome::Continue
+                }
+                outcome => outcome,
+            };
+        }
+        if let Event::Key(key) = event {
+            if key.kind != KeyEventKind::Press {
+                return Outcome::Continue;
+            }
+            self.status = None;
+            if ui::is_quit_key(*key) {
+                return Outcome::Quit;
+            }
+            self.on_key(key.code);
+        }
+        if let Event::Mouse(mouse) = event {
+            if ui::is_click(mouse) {
+                self.status = None;
+            }
+            self.on_pointer(*mouse);
+        }
+        Outcome::Continue
+    }
+
+    fn on_key(&mut self, code: KeyCode) {
+        let is_moved = match self.screen {
+            Screen::Overview => self.overview.key(code, self.slices.len()),
+            Screen::Places => self.places.key(code, self.shown.len()),
+            Screen::Browser => false,
+        };
+        if is_moved {
+            return;
+        }
+        match (self.screen, code) {
+            (_, KeyCode::Char('b')) => self.browse_all(),
+            (Screen::Overview, KeyCode::Enter | KeyCode::Right | KeyCode::Char('l')) => {
+                self.open_slice();
+            }
+            (Screen::Places, KeyCode::Enter | KeyCode::Right | KeyCode::Char('l')) => {
+                self.open_place();
+            }
+            (
+                Screen::Places,
+                KeyCode::Left | KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h'),
+            ) => self.screen = Screen::Overview,
+            _ => {}
+        }
+    }
+
+    fn on_pointer(&mut self, mouse: MouseEvent) {
+        let pointer = match self.screen {
+            Screen::Overview => self.overview.mouse(mouse, self.slices.len()),
+            Screen::Places => self.places.mouse(mouse, self.shown.len()),
+            Screen::Browser => Pointer::Nothing,
+        };
+        match (self.screen, pointer) {
+            (Screen::Overview, Pointer::Activate) => self.open_slice(),
+            (Screen::Places, Pointer::Activate) => self.open_place(),
+            (Screen::Places, Pointer::Back) => self.screen = Screen::Overview,
+            _ => {}
+        }
+    }
+
+    fn open_slice(&mut self) {
+        let Some(slice) = self.slices.get(self.overview.index) else {
+            return;
+        };
+        match slice.part {
+            Part::Group(group) => {
+                self.shown = self.summary.place_indices(group);
+                self.group = Some(group);
+                self.places.reset(0);
+                self.screen = Screen::Places;
+            }
+            Part::Hidden => self.status = Some(hidden_reason(&self.disk)),
+            Part::System | Part::Reserved => {
+                self.status = Some("The system manages this space itself.".to_string());
+            }
+            Part::Free => {}
+        }
+    }
+
+    fn open_place(&mut self) {
+        let Some(&index) = self.shown.get(self.places.index) else {
+            return;
+        };
+        self.browser.jump(self.summary.places[index].trail.clone());
+        self.came_from = Screen::Places;
+        self.screen = Screen::Browser;
+    }
+
+    fn browse_all(&mut self) {
+        self.browser.jump(Vec::new());
+        self.came_from = self.screen;
+        self.screen = Screen::Browser;
+    }
+
+    pub fn render(&mut self, frame: &mut Frame) {
+        match self.screen {
+            Screen::Overview => self.render_overview(frame),
+            Screen::Places => self.render_places(frame),
+            Screen::Browser => self.browser.render(frame),
+        }
+    }
+
+    fn color(&self, part: Part) -> Color {
+        match part {
+            Part::Group(group) => {
+                let rank = self.colors.iter().position(|&g| g == group);
+                rank.and_then(|rank| PALETTE.get(rank))
+                    .copied()
+                    .unwrap_or(OTHER)
+            }
+            Part::Hidden => HIDDEN,
+            Part::System | Part::Reserved => SYSTEM,
+            Part::Free => TRACK,
+        }
+    }
+
+    fn render_overview(&mut self, frame: &mut Frame) {
+        let [top, body, bottom] = ui::screen(frame.area());
+        ui::header(frame, top, &self.disk.name, &disk_summary(&self.disk));
+        let [bar, _, list] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(body);
+        let parts: Vec<(u64, Color, bool)> = self
+            .slices
+            .iter()
+            .map(|slice| (slice.size, self.color(slice.part), slice.part == Part::Free))
+            .collect();
+        frame.render_widget(Paragraph::new(stacked(&parts, bar.width)), bar);
+        self.render_slices(frame, list);
+        let keys = [
+            ("↑↓", "move"),
+            ("→", "open"),
+            ("b", "browse all"),
+            ("q", "quit"),
+        ];
+        let denied: u64 = self.summary.totals.iter().map(|total| total.denied).sum();
+        let mut notes = Vec::new();
+        if denied > 0 {
+            notes.push(format!("{} no access", format::count(denied)));
+        }
+        let extra = overcount(&self.disk, &self.summary);
+        if extra > 0 {
+            notes.push(overcount_note(extra));
+        }
+        let note = notes.join(" · ");
+        ui::footer(frame, bottom, &keys, self.status.as_deref(), &note);
+    }
+
+    fn render_slices(&mut self, frame: &mut Frame, area: Rect) {
+        let visible = self.overview.window(area, self.slices.len());
+        let name_width = self
+            .slices
+            .iter()
+            .map(|slice| {
+                let note = access_note(slice.is_blocked, slice.denied).map_or(0, |n| n.width());
+                ui::width(slice.name()) + note as u16
+            })
+            .max()
+            .unwrap_or(0);
+        let rows: Vec<Row> = self.slices[visible]
+            .iter()
+            .map(|slice| self.slice_row(slice))
+            .collect();
+        let widths = [
+            Constraint::Length(9),
+            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(name_width),
+            Constraint::Fill(1),
+            Constraint::Length(13),
+        ];
+        let table = Table::new(rows, widths)
+            .column_spacing(1)
+            .row_highlight_style(SELECTION);
+        frame.render_stateful_widget(table, area, &mut self.overview.state());
+    }
+
+    fn slice_row(&self, slice: &Slice) -> Row<'static> {
+        let share = format::share(slice.size, scale(&self.disk, &self.slices));
+        let swatch = match slice.part {
+            Part::Free => " ",
+            _ => "■",
+        };
+        let places = match slice.places {
+            0 => String::new(),
+            n => format::places(n),
+        };
+        let mut name = vec![Span::raw(slice.name())];
+        if let Some(note) = access_note(slice.is_blocked, slice.denied) {
+            name.push(note);
+        }
+        let dim = Style::new().fg(DIM);
+        Row::new([
+            Cell::from(Line::from(format::size(slice.size)).right_aligned()),
+            Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
+            Cell::from(Span::styled(
+                swatch,
+                Style::new().fg(self.color(slice.part)),
+            )),
+            Cell::from(Line::from(name)),
+            Cell::from(slice.about(&self.disk)).style(dim),
+            Cell::from(Line::from(places).right_aligned()).style(dim),
+        ])
+    }
+
+    fn render_places(&mut self, frame: &mut Frame) {
+        let Some(group) = self.group else {
+            return;
+        };
+        let [top, list, bottom] = ui::screen(frame.area());
+        let total: u64 = self
+            .shown
+            .iter()
+            .map(|&i| self.summary.places[i].size)
+            .sum();
+        let summary = format!(
+            "{} · {}",
+            format::size(total),
+            format::places(self.shown.len())
+        );
+        ui::header(frame, top, group.name(), &summary);
+        self.render_place_rows(frame, list, total);
+        let keys = [
+            ("↑↓", "move"),
+            ("→", "open"),
+            ("←", "back"),
+            ("b", "browse all"),
+            ("q", "quit"),
+        ];
+        ui::footer(frame, bottom, &keys, self.status.as_deref(), "");
+    }
+
+    fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64) {
+        let visible = self.places.window(area, self.shown.len());
+        let label = self
+            .shown
+            .iter()
+            .map(|&i| ui::width(self.summary.places[i].label))
+            .max();
+        let columns = PlaceColumns::fit(area.width, label.unwrap_or(0));
+        let rows: Vec<Row> = self.shown[visible]
+            .iter()
+            .map(|&index| place_row(&self.summary.places[index], total, &columns))
+            .collect();
+        let widths = [
+            Constraint::Length(9),
+            Constraint::Length(4),
+            Constraint::Length(columns.bar),
+            Constraint::Fill(1),
+            Constraint::Length(columns.label),
+        ];
+        let table = Table::new(rows, widths)
+            .column_spacing(1)
+            .row_highlight_style(SELECTION);
+        frame.render_stateful_widget(table, area, &mut self.places.state());
+    }
+}
+
+struct PlaceColumns {
+    bar: u16,
+    label: u16,
+    path: usize,
+}
+
+impl PlaceColumns {
+    fn fit(width: u16, label: u16) -> Self {
+        let bar = ui::bar_width(width);
+        let label = if bar == 0 { 0 } else { label };
+        let path = usize::from(width.saturating_sub(9 + 4 + bar + label + 4));
+        PlaceColumns { bar, label, path }
+    }
+}
+
+fn place_row(place: &Place, total: u64, columns: &PlaceColumns) -> Row<'static> {
+    let share = format::share(place.size, total);
+    let note = access_note(place.is_blocked, place.denied);
+    let room = columns
+        .path
+        .saturating_sub(note.as_ref().map_or(0, Span::width));
+    let mut path = vec![Span::raw(ui::fit_start(&format::path(&place.path), room))];
+    path.extend(note);
+    let dim = Style::new().fg(DIM);
+    Row::new([
+        Cell::from(Line::from(format::size(place.size)).right_aligned()),
+        Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
+        Cell::from(ui::bar_line(share, columns.bar)),
+        Cell::from(Line::from(path)),
+        Cell::from(Line::from(place.label).right_aligned()).style(dim),
+    ])
+}
+
+fn access_note(is_blocked: bool, denied: u64) -> Option<Span<'static>> {
+    let note = format::access(is_blocked, denied)?;
+    let style = if is_blocked {
+        Style::new().fg(WARN).add_modifier(Modifier::DIM)
+    } else {
+        Style::new().fg(DIM)
+    };
+    Some(Span::styled(format!("  {note}"), style))
+}
+
+fn hidden_reason(disk: &Disk) -> String {
+    if disk.is_apfs {
+        format!(
+            "Snapshots and purgeable space stay hidden. {}",
+            format::ACCESS_HINT
+        )
+    } else {
+        format!("ruim could not read this. {}", format::ACCESS_HINT)
+    }
+}
+
+pub fn stacked(parts: &[(u64, Color, bool)], width: u16) -> Line<'static> {
+    let sizes: Vec<u64> = parts.iter().map(|part| part.0).collect();
+    let cells = apportion(&sizes, usize::from(width));
+    let spans: Vec<Span> = parts
+        .iter()
+        .zip(cells)
+        .filter(|(_, cells)| *cells > 0)
+        .map(|(&(_, color, is_free), cells)| {
+            if is_free {
+                Span::styled("·".repeat(cells), Style::new().fg(TRACK))
+            } else {
+                Span::styled("█".repeat(cells), Style::new().fg(color))
+            }
+        })
+        .collect();
+    Line::from(spans)
+}
+
+pub fn apportion(sizes: &[u64], width: usize) -> Vec<usize> {
+    let total: u64 = sizes.iter().sum();
+    if total == 0 {
+        return vec![0; sizes.len()];
+    }
+    let exact: Vec<f64> = sizes
+        .iter()
+        .map(|&size| size as f64 * width as f64 / total as f64)
+        .collect();
+    let mut cells: Vec<usize> = exact.iter().map(|share| share.floor() as usize).collect();
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by(|&a, &b| (exact[b] - exact[b].floor()).total_cmp(&(exact[a] - exact[a].floor())));
+    let left = width.saturating_sub(cells.iter().sum());
+    for &index in order.iter().take(left) {
+        cells[index] += 1;
+    }
+    cells
+}
+
+pub fn run() -> io::Result<()> {
+    let disk = volumes::boot_disk()?;
+    let progress = Arc::new(Progress::default());
+    let worker: JoinHandle<io::Result<Scanned>> = {
+        let (disk, progress) = (disk.clone(), Arc::clone(&progress));
+        thread::spawn(move || scan_disk(&disk, &progress))
+    };
+    let mut terminal = ui::start()?;
+    let result = session(&mut terminal, disk, &progress, worker);
+    ui::stop();
+    result
+}
+
+fn session(
+    terminal: &mut DefaultTerminal,
+    mut disk: Disk,
+    progress: &Progress,
+    worker: JoinHandle<io::Result<Scanned>>,
+) -> io::Result<()> {
+    let scanned = ui::wait(terminal, progress, worker, |frame, elapsed| {
+        waiting(frame, &disk, progress, elapsed);
+    })?;
+    let Some(scanned) = scanned else {
+        return Ok(());
+    };
+    disk.purgeable = scanned.purgeable;
+    let mut app = App::new(disk, scanned.root, scanned.summary);
+    loop {
+        terminal.draw(|frame| app.render(frame))?;
+        if app.handle(&ui::next_event()?) == Outcome::Quit {
+            return Ok(());
+        }
+    }
+}
+
+fn waiting(frame: &mut Frame, disk: &Disk, progress: &Progress, elapsed: Duration) {
+    let [top, body, _] = ui::screen(frame.area());
+    ui::header(frame, top, &disk.name, &disk_summary(disk));
+    let [bar, rest] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
+    let scanned = progress.bytes().min(disk.data);
+    let parts = [
+        (scanned, ui::ACCENT, false),
+        (disk.data - scanned, DIM, false),
+        (disk.system, SYSTEM, false),
+        (disk.other(), SYSTEM, false),
+        (disk.free, TRACK, true),
+    ];
+    frame.render_widget(Paragraph::new(stacked(&parts, bar.width)), bar);
+    ui::scanning(frame, rest, "the whole disk", progress, elapsed);
+}

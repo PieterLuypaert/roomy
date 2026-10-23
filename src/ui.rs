@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -18,17 +19,17 @@ use crate::format;
 use crate::scan::{self, Progress};
 use crate::tree::{Kind, Node};
 
-const TICK: Duration = Duration::from_millis(100);
+pub(crate) const TICK: Duration = Duration::from_millis(100);
 // Clicks, wheel and drags in SGR form, without the any-motion tracking that floods redraws.
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-const ACCENT: Color = Color::Indexed(75);
-const DIM: Color = Color::Indexed(244);
-const WARN: Color = Color::Indexed(203);
-const TRACK: Color = Color::Indexed(240);
-const SELECTION: Style = Style::new()
+pub(crate) const ACCENT: Color = Color::Indexed(75);
+pub(crate) const DIM: Color = Color::Indexed(244);
+pub(crate) const WARN: Color = Color::Indexed(203);
+pub(crate) const TRACK: Color = Color::Indexed(240);
+pub(crate) const SELECTION: Style = Style::new()
     .fg(Color::Indexed(255))
     .bg(Color::Indexed(237))
     .add_modifier(Modifier::BOLD);
@@ -41,6 +42,90 @@ const BADGE: Style = Style::new()
 pub enum Outcome {
     Continue,
     Quit,
+    Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pointer {
+    Nothing,
+    Activate,
+    Back,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Cursor {
+    pub(crate) index: usize,
+    offset: usize,
+    area: Rect,
+}
+
+impl Cursor {
+    pub(crate) fn reset(&mut self, index: usize) {
+        self.index = index;
+        self.offset = 0;
+    }
+
+    pub(crate) fn move_by(&mut self, delta: isize, len: usize) {
+        if let Some(last) = len.checked_sub(1) {
+            self.index = self.index.saturating_add_signed(delta).min(last);
+        }
+    }
+
+    pub(crate) fn key(&mut self, code: KeyCode, len: usize) -> bool {
+        let page = self.area.height.max(2) as isize - 1;
+        let delta = match code {
+            KeyCode::Up | KeyCode::Char('k') => -1,
+            KeyCode::Down | KeyCode::Char('j') => 1,
+            KeyCode::PageUp => -page,
+            KeyCode::PageDown | KeyCode::Char(' ') => page,
+            KeyCode::Home | KeyCode::Char('g') => isize::MIN,
+            KeyCode::End | KeyCode::Char('G') => isize::MAX,
+            _ => return false,
+        };
+        self.move_by(delta, len);
+        true
+    }
+
+    pub(crate) fn mouse(&mut self, mouse: MouseEvent, len: usize) -> Pointer {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_by(-3, len),
+            MouseEventKind::ScrollDown => self.move_by(3, len),
+            MouseEventKind::Down(MouseButton::Right) => return Pointer::Back,
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(index) = self.hit(mouse.column, mouse.row, len) else {
+                    return Pointer::Nothing;
+                };
+                if index == self.index {
+                    return Pointer::Activate;
+                }
+                self.index = index;
+            }
+            _ => {}
+        }
+        Pointer::Nothing
+    }
+
+    fn hit(&self, column: u16, row: u16, len: usize) -> Option<usize> {
+        if !self.area.contains(Position::new(column, row)) {
+            return None;
+        }
+        let index = self.offset + usize::from(row - self.area.y);
+        (index < len).then_some(index)
+    }
+
+    pub(crate) fn window(&mut self, area: Rect, len: usize) -> Range<usize> {
+        self.area = area;
+        let height = usize::from(area.height);
+        if height == 0 || len == 0 {
+            return 0..0;
+        }
+        self.offset = scrolled(self.offset, self.index.min(len - 1), height);
+        self.offset..(self.offset + height).min(len)
+    }
+
+    pub(crate) fn state(&self) -> TableState {
+        TableState::default().with_selected(self.index.saturating_sub(self.offset))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,11 +168,10 @@ pub struct Browser {
     root: Node,
     root_path: PathBuf,
     trail: Vec<usize>,
+    floor: usize,
     rows: Vec<usize>,
-    cursor: usize,
-    offset: usize,
+    cursor: Cursor,
     sort: Sort,
-    list: Rect,
     denied: u64,
     unreadable: u64,
     status: Option<String>,
@@ -101,11 +185,10 @@ impl Browser {
             root,
             root_path,
             trail: Vec::new(),
+            floor: 0,
             rows: Vec::new(),
-            cursor: 0,
-            offset: 0,
+            cursor: Cursor::default(),
             sort: Sort::Size,
-            list: Rect::default(),
             denied,
             unreadable,
             status: None,
@@ -114,12 +197,16 @@ impl Browser {
         browser
     }
 
+    pub fn root(&self) -> &Node {
+        &self.root
+    }
+
     pub fn current(&self) -> &Node {
         self.root.descend(&self.trail)
     }
 
     pub fn selected(&self) -> Option<&Node> {
-        let child = *self.rows.get(self.cursor)?;
+        let child = self.selected_child()?;
         self.current().children.get(child)
     }
 
@@ -137,6 +224,19 @@ impl Browser {
         self.status.as_deref()
     }
 
+    /// Shows the folder at `trail`, or the folder holding it when it is a file or does not
+    /// open; back stops there.
+    pub fn jump(&mut self, mut trail: Vec<usize>) {
+        let target = self.root.descend(&trail);
+        let reason = refusal(target);
+        let opens = trail.is_empty() || (target.is_dir() && reason.is_none());
+        let focus = if opens { None } else { trail.pop() };
+        self.status = if opens { None } else { reason };
+        self.floor = trail.len();
+        self.trail = trail;
+        self.show(focus);
+    }
+
     pub fn handle(&mut self, event: &Event) -> Outcome {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -144,8 +244,17 @@ impl Browser {
                 self.on_key(*key)
             }
             Event::Mouse(mouse) => {
-                self.on_mouse(*mouse);
-                Outcome::Continue
+                if is_click(mouse) {
+                    self.status = None;
+                }
+                match self.cursor.mouse(*mouse, self.rows.len()) {
+                    Pointer::Activate => {
+                        self.open();
+                        Outcome::Continue
+                    }
+                    Pointer::Back => self.back(),
+                    Pointer::Nothing => Outcome::Continue,
+                }
             }
             _ => Outcome::Continue,
         }
@@ -164,22 +273,25 @@ impl Browser {
         }
     }
 
-    pub fn back(&mut self) {
-        if let Some(child) = self.trail.pop() {
-            self.show(Some(child));
+    pub fn back(&mut self) -> Outcome {
+        if self.trail.len() <= self.floor {
+            return Outcome::Leave;
         }
+        let child = self.trail.pop();
+        self.show(child);
+        Outcome::Continue
     }
 
     fn selected_child(&self) -> Option<usize> {
-        self.rows.get(self.cursor).copied()
+        self.rows.get(self.cursor.index).copied()
     }
 
     fn show(&mut self, focus: Option<usize>) {
         self.rows = self.sort.order(self.current());
-        self.cursor = focus
+        let index = focus
             .and_then(|child| self.rows.iter().position(|&row| row == child))
             .unwrap_or(0);
-        self.offset = 0;
+        self.cursor.reset(index);
     }
 
     fn cycle_sort(&mut self) {
@@ -188,92 +300,49 @@ impl Browser {
         self.show(focus);
     }
 
-    fn move_by(&mut self, delta: isize) {
-        let Some(last) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        self.cursor = self.cursor.saturating_add_signed(delta).min(last);
-    }
-
     fn on_key(&mut self, key: KeyEvent) -> Outcome {
-        let page = self.list.height.max(2) as isize - 1;
+        if is_quit_key(key) {
+            return Outcome::Quit;
+        }
+        if self.cursor.key(key.code, self.rows.len()) {
+            return Outcome::Continue;
+        }
         match key.code {
-            KeyCode::Char('q') => return Outcome::Quit,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Outcome::Quit;
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
-            KeyCode::PageUp => self.move_by(-page),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.move_by(page),
-            KeyCode::Home | KeyCode::Char('g') => self.move_by(isize::MIN),
-            KeyCode::End | KeyCode::Char('G') => self.move_by(isize::MAX),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => self.open(),
-            KeyCode::Left | KeyCode::Backspace | KeyCode::Esc | KeyCode::Char('h') => self.back(),
+            KeyCode::Left | KeyCode::Backspace | KeyCode::Esc | KeyCode::Char('h') => {
+                return self.back();
+            }
             KeyCode::Char('s') => self.cycle_sort(),
             _ => {}
         }
         Outcome::Continue
     }
 
-    fn on_mouse(&mut self, mouse: MouseEvent) {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => self.move_by(-3),
-            MouseEventKind::ScrollDown => self.move_by(3),
-            MouseEventKind::Down(MouseButton::Left) => self.click(mouse.column, mouse.row),
-            MouseEventKind::Down(MouseButton::Right) => self.back(),
-            _ => {}
-        }
-    }
-
-    fn click(&mut self, column: u16, row: u16) {
-        if !self.list.contains(Position::new(column, row)) {
-            return;
-        }
-        let index = self.offset + usize::from(row - self.list.y);
-        if index >= self.rows.len() {
-            return;
-        }
-        if self.cursor == index {
-            self.open();
-        } else {
-            self.cursor = index;
-        }
-    }
-
     pub fn render(&mut self, frame: &mut Frame) {
-        let [header, _, list, footer] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(frame.area());
-        self.list = list;
-        self.render_header(frame, header);
-        self.render_rows(frame, list);
-        self.render_footer(frame, footer);
-    }
-
-    fn render_header(&self, frame: &mut Frame, area: Rect) {
+        let [top, list, bottom] = screen(frame.area());
         let current = self.current();
         let total = format!(
-            "{} · {} ",
+            "{} · {}",
             format::size(current.size),
             format::items(current.items)
         );
-        let [left, right] =
-            Layout::horizontal([Constraint::Fill(1), Constraint::Length(width(&total))])
-                .areas(area);
-        let room = usize::from(left.width).saturating_sub(9);
-        let path = fit_start(&format::path(&self.path()), room);
-        let title = Line::from(vec![
-            Span::styled(" ruim ", BADGE),
-            Span::raw("  "),
-            Span::styled(path, Style::new().add_modifier(Modifier::BOLD)),
-        ]);
-        frame.render_widget(Paragraph::new(title), left);
-        frame.render_widget(Paragraph::new(total).right_aligned(), right);
+        header(frame, top, &format::path(&self.path()), &total);
+        self.render_rows(frame, list);
+        let sort = format!("sort: {}", self.sort.label());
+        let keys = [
+            ("↑↓", "move"),
+            ("→", "open"),
+            ("←", "back"),
+            ("s", sort.as_str()),
+            ("q", "quit"),
+        ];
+        footer(
+            frame,
+            bottom,
+            &keys,
+            self.status.as_deref(),
+            &self.trouble(),
+        );
     }
 
     fn render_rows(&mut self, frame: &mut Frame, area: Rect) {
@@ -287,48 +356,15 @@ impl Browser {
             frame.render_widget(Paragraph::new(note).centered().style(DIM), area);
             return;
         }
-        let height = usize::from(area.height);
-        if height == 0 {
-            return;
-        }
-        self.offset = scrolled(self.offset, self.cursor, height);
-        let end = (self.offset + height).min(self.rows.len());
+        let visible = self.cursor.window(area, self.rows.len());
         let columns = Columns::fit(area.width, current);
-        let rows = self.rows[self.offset..end]
+        let rows = self.rows[visible]
             .iter()
             .map(|&child| row(&current.children[child], current.size, &columns));
         let table = Table::new(rows, columns.widths())
             .column_spacing(1)
             .row_highlight_style(SELECTION);
-        let mut state = TableState::default().with_selected(self.cursor - self.offset);
-        frame.render_stateful_widget(table, area, &mut state);
-    }
-
-    fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        if let Some(status) = &self.status {
-            let line = Span::styled(format!(" {status}"), Style::new().fg(WARN));
-            frame.render_widget(Paragraph::new(line), area);
-            return;
-        }
-        let sort = format!("sort: {}", self.sort.label());
-        let keys = [
-            ("↑↓", "move"),
-            ("→", "open"),
-            ("←", "back"),
-            ("s", sort.as_str()),
-            ("q", "quit"),
-        ];
-        let mut spans = Vec::new();
-        for (key, action) in keys {
-            spans.push(Span::styled(
-                format!(" {key} "),
-                Style::new().add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(format!("{action} "), Style::new().fg(DIM)));
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        let note = Span::styled(self.trouble(), Style::new().fg(DIM));
-        frame.render_widget(Paragraph::new(note).right_aligned(), area);
+        frame.render_stateful_widget(table, area, &mut self.cursor.state());
     }
 
     fn trouble(&self) -> String {
@@ -339,11 +375,7 @@ impl Browser {
         if self.unreadable > 0 {
             parts.push(format!("{} unreadable", format::count(self.unreadable)));
         }
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("{} ", parts.join(" · "))
-        }
+        parts.join(" · ")
     }
 }
 
@@ -369,12 +401,7 @@ struct Columns {
 
 impl Columns {
     fn fit(width: u16, node: &Node) -> Self {
-        let bar = match width {
-            w if w >= 110 => 30,
-            w if w >= 80 => 20,
-            w if w >= 60 => 10,
-            _ => 0,
-        };
+        let bar = bar_width(width);
         let most = node
             .children
             .iter()
@@ -400,6 +427,15 @@ impl Columns {
     }
 }
 
+pub(crate) fn bar_width(width: u16) -> u16 {
+    match width {
+        w if w >= 110 => 30,
+        w if w >= 80 => 20,
+        w if w >= 60 => 10,
+        _ => 0,
+    }
+}
+
 fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
     let share = format::share(node.size, parent);
     let items = if columns.items > 0 && node.items > 0 {
@@ -417,7 +453,7 @@ fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
     ])
 }
 
-fn bar_line(share: f64, width: u16) -> Line<'static> {
+pub(crate) fn bar_line(share: f64, width: u16) -> Line<'static> {
     let filled = bar(share, width);
     let rest = usize::from(width).saturating_sub(filled.chars().count());
     Line::from(vec![
@@ -486,11 +522,11 @@ fn heat(share: f64) -> Color {
     }
 }
 
-fn width(text: &str) -> u16 {
+pub(crate) fn width(text: &str) -> u16 {
     u16::try_from(text.chars().count()).unwrap_or(u16::MAX)
 }
 
-fn fit_start(text: &str, room: usize) -> String {
+pub(crate) fn fit_start(text: &str, room: usize) -> String {
     let length = text.chars().count();
     if length <= room {
         return text.to_string();
@@ -499,17 +535,71 @@ fn fit_start(text: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
+pub(crate) fn screen(area: Rect) -> [Rect; 3] {
+    let [top, _, list, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    [top, list, bottom]
+}
+
+pub(crate) fn header(frame: &mut Frame, area: Rect, title: &str, summary: &str) {
+    let summary = format!("{summary} ");
+    let [left, right] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(width(&summary))]).areas(area);
+    let room = usize::from(left.width).saturating_sub(9);
+    let line = Line::from(vec![
+        Span::styled(" ruim ", BADGE),
+        Span::raw("  "),
+        Span::styled(
+            fit_start(title, room),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), left);
+    frame.render_widget(Paragraph::new(summary).right_aligned(), right);
+}
+
+pub(crate) fn footer(
+    frame: &mut Frame,
+    area: Rect,
+    keys: &[(&str, &str)],
+    status: Option<&str>,
+    note: &str,
+) {
+    if let Some(status) = status {
+        let line = Span::styled(format!(" {status}"), Style::new().fg(WARN));
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let mut spans = Vec::new();
+    for (key, action) in keys {
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::new().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!("{action} "), Style::new().fg(DIM)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    if !note.is_empty() {
+        let right = Span::styled(format!("{note} "), Style::new().fg(DIM));
+        frame.render_widget(Paragraph::new(right).right_aligned(), area);
+    }
+}
+
 pub fn run(path: PathBuf) -> io::Result<()> {
     let progress = Arc::new(Progress::default());
-    let scanner = spawn_scan(path.clone(), Arc::clone(&progress));
+    let scanner = {
+        let (path, progress) = (path.clone(), Arc::clone(&progress));
+        thread::spawn(move || scan::scan(&path, &progress))
+    };
     let mut terminal = start()?;
     let result = session(&mut terminal, path, &progress, scanner);
     stop();
     result
-}
-
-fn spawn_scan(path: PathBuf, progress: Arc<Progress>) -> JoinHandle<io::Result<Node>> {
-    thread::spawn(move || scan::scan(&path, &progress))
 }
 
 fn session(
@@ -519,7 +609,10 @@ fn session(
     scanner: JoinHandle<io::Result<Node>>,
 ) -> io::Result<()> {
     let label = format::path(&path);
-    let Some(root) = wait(terminal, &label, progress, scanner)? else {
+    let scanned = wait(terminal, progress, scanner, |frame, elapsed| {
+        scanning(frame, frame.area(), &label, progress, elapsed);
+    })?;
+    let Some(root) = scanned else {
         return Ok(());
     };
     let mut browser = Browser::new(root, path);
@@ -531,7 +624,11 @@ fn session(
     }
 }
 
-fn next_event() -> io::Result<Event> {
+pub(crate) fn is_click(mouse: &MouseEvent) -> bool {
+    matches!(mouse.kind, MouseEventKind::Down(_))
+}
+
+pub(crate) fn next_event() -> io::Result<Event> {
     loop {
         let event = event::read()?;
         let is_motion = matches!(
@@ -547,65 +644,85 @@ fn next_event() -> io::Result<Event> {
     }
 }
 
-fn wait(
+pub(crate) fn wait<T>(
     terminal: &mut DefaultTerminal,
-    label: &str,
     progress: &Progress,
-    scanner: JoinHandle<io::Result<Node>>,
-) -> io::Result<Option<Node>> {
+    worker: JoinHandle<io::Result<T>>,
+    mut draw: impl FnMut(&mut Frame, Duration),
+) -> io::Result<Option<T>> {
     let started = Instant::now();
-    while !scanner.is_finished() {
-        terminal.draw(|frame| scanning(frame, label, progress, started.elapsed()))?;
+    while !worker.is_finished() {
+        terminal.draw(|frame| draw(frame, started.elapsed()))?;
         if event::poll(TICK)? && is_quit(&event::read()?) {
             progress.cancel();
             return Ok(None);
         }
     }
-    let scanned = scanner
+    let result = worker
         .join()
         .map_err(|_| io::Error::other("the scan stopped unexpectedly"))?;
-    scanned.map(Some)
+    result.map(Some)
 }
 
 fn is_quit(event: &Event) -> bool {
     let Event::Key(key) = event else {
         return false;
     };
-    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    key.kind == KeyEventKind::Press
-        && (is_ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc))
+    key.kind == KeyEventKind::Press && (is_quit_key(*key) || key.code == KeyCode::Esc)
 }
 
-fn scanning(frame: &mut Frame, label: &str, progress: &Progress, elapsed: Duration) {
+pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
+    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+    is_ctrl_c || key.code == KeyCode::Char('q')
+}
+
+pub(crate) fn scanning(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    progress: &Progress,
+    elapsed: Duration,
+) {
+    let has_badge = area.y == frame.area().y;
+    let lines = progress_lines(label, progress, elapsed, area.width, has_badge);
+    let [middle] = Layout::vertical([Constraint::Length(lines.len() as u16)])
+        .flex(Flex::Center)
+        .areas(area);
+    frame.render_widget(Paragraph::new(lines).centered(), middle);
+}
+
+fn progress_lines(
+    label: &str,
+    progress: &Progress,
+    elapsed: Duration,
+    width: u16,
+    has_badge: bool,
+) -> Vec<Line<'static>> {
     let spinner = SPINNER[(elapsed.as_millis() / TICK.as_millis()) as usize % SPINNER.len()];
-    let room = usize::from(frame.area().width).saturating_sub(4);
     let counts = format!(
         "{} · {} · {:.1} s",
         format::items(progress.items()),
         format::size(progress.bytes()),
         elapsed.as_secs_f64()
     );
-    let lines = vec![
+    let current = fit_start(
+        &format::path(&progress.current()),
+        usize::from(width).saturating_sub(4),
+    );
+    vec![
         Line::from(vec![
-            Span::styled(" ruim ", BADGE),
+            Span::styled(if has_badge { " ruim " } else { "" }, BADGE),
             Span::raw(format!("  scanning {label} {spinner}")),
         ]),
         Line::raw(""),
         Line::raw(counts),
-        Line::styled(
-            fit_start(&format::path(&progress.current()), room),
-            Style::new().fg(DIM),
-        ),
+        Line::styled(current, Style::new().fg(DIM)),
         Line::raw(""),
         Line::styled("q to stop", Style::new().fg(DIM)),
-    ];
-    let [area] = Layout::vertical([Constraint::Length(lines.len() as u16)])
-        .flex(Flex::Center)
-        .areas(frame.area());
-    frame.render_widget(Paragraph::new(lines).centered(), area);
+    ]
 }
 
-fn start() -> io::Result<DefaultTerminal> {
+pub(crate) fn start() -> io::Result<DefaultTerminal> {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = mouse(MOUSE_OFF);
@@ -619,7 +736,7 @@ fn start() -> io::Result<DefaultTerminal> {
     Ok(terminal)
 }
 
-fn stop() {
+pub(crate) fn stop() {
     let released = mouse(MOUSE_OFF);
     ratatui::restore();
     if let Err(err) = released {

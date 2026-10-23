@@ -12,5 +12,6 @@ readme = "README.md"
 strip = true
 
 [dependencies]
+libc = "0.2"
 ratatui = "0.30"
 rayon = "1.12.0"

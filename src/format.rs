@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::volumes;
+
 const UNITS: [&str; 6] = ["kB", "MB", "GB", "TB", "PB", "EB"];
 
 pub const ACCESS_HINT: &str = if cfg!(target_os = "macos") {
@@ -45,6 +47,21 @@ pub fn items(n: u64) -> String {
     }
 }
 
+pub fn access(is_blocked: bool, denied: u64) -> Option<&'static str> {
+    match (is_blocked, denied) {
+        (_, 0) => None,
+        (true, _) => Some("no access"),
+        (false, _) => Some("partly hidden"),
+    }
+}
+
+pub fn places(n: usize) -> String {
+    match n {
+        1 => "1 place".to_string(),
+        n => format!("{} places", count(n as u64)),
+    }
+}
+
 pub fn percent(share: f64) -> String {
     match share {
         s if s <= 0.0 => String::new(),
@@ -62,6 +79,7 @@ pub fn share(part: u64, whole: u64) -> f64 {
 }
 
 pub fn path(path: &Path) -> String {
+    let path = volumes::logical(path);
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty());
     match home.and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),

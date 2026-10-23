@@ -1,8 +1,13 @@
 use std::fmt::Write;
 use std::path::Path;
 
+use crate::categories::{Group, Summary};
 use crate::format;
+use crate::overview::{self, Part, Slice};
 use crate::tree::{Kind, Node};
+use crate::volumes::{self, Disk};
+
+const TOP_PLACES: usize = 10;
 
 pub fn text(root: &Node, path: &Path, depth: usize) -> String {
     let mut out = format!("{:>9}  {}\n", format::size(root.size), format::path(path));
@@ -99,6 +104,108 @@ fn kind(kind: Kind) -> &'static str {
         Kind::Link => "link",
         Kind::Other => "other",
     }
+}
+
+pub fn summary_text(disk: &Disk, summary: &Summary, depth: usize) -> String {
+    let mut out = format!("{}  {}", clean(&disk.name), overview::disk_summary(disk));
+    if let Some(purgeable) = disk.purgeable {
+        let _ = write!(out, " ({} purgeable)", format::size(purgeable));
+    }
+    out.push_str("\n\n");
+    let slices = overview::slices(disk, summary);
+    let scale = overview::scale(disk, &slices);
+    for slice in &slices {
+        let share = format::percent(format::share(slice.size, scale));
+        let size = format::size(slice.size);
+        let notes = slice_notes(slice);
+        let _ = writeln!(out, "{size:>9} {share:>4}  {}{notes}", slice.name());
+        if let (Part::Group(group), true) = (slice.part, depth > 1) {
+            places_text(&mut out, summary, group);
+        }
+    }
+    let extra = overview::overcount(disk, summary);
+    if extra > 0 {
+        let _ = writeln!(out, "\nNote: {}.", overview::overcount_note(extra));
+    }
+    out
+}
+
+fn slice_notes(slice: &Slice) -> String {
+    let mut notes = Vec::new();
+    if slice.places > 0 {
+        notes.push(format::places(slice.places));
+    }
+    if let Some(note) = format::access(slice.is_blocked, slice.denied) {
+        notes.push(note.to_string());
+    }
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!("  ({})", notes.join(", "))
+    }
+}
+
+fn places_text(out: &mut String, summary: &Summary, group: Group) {
+    let indices = summary.place_indices(group);
+    for &index in indices.iter().take(TOP_PLACES) {
+        let place = &summary.places[index];
+        let path = clean(&format::path(&place.path));
+        let size = format::size(place.size);
+        let access = format::access(place.is_blocked, place.denied)
+            .map_or(String::new(), |n| format!(", {n}"));
+        let _ = writeln!(out, "{size:>16}  {path}  ({}{access})", place.label);
+    }
+    if indices.len() > TOP_PLACES {
+        let more = format::count((indices.len() - TOP_PLACES) as u64);
+        let _ = writeln!(out, "{:>16}  … and {more} more", "");
+    }
+}
+
+pub fn summary_json(disk: &Disk, summary: &Summary, depth: usize) -> String {
+    let mut out = String::from("{\"disk\":{");
+    field(&mut out, "name", &disk.name);
+    let purgeable = disk.purgeable.map_or("null".to_string(), |p| p.to_string());
+    let _ = write!(
+        out,
+        ",\"total\":{},\"used\":{},\"free\":{},\"purgeable\":{purgeable}}},\"parts\":[",
+        disk.total,
+        disk.used(),
+        disk.free
+    );
+    for (i, slice) in overview::slices(disk, summary).iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('{');
+        field(&mut out, "name", slice.name());
+        let _ = write!(out, ",\"size\":{}", slice.size);
+        if let (Part::Group(group), true) = (slice.part, depth > 1) {
+            places_json(&mut out, summary, group);
+        }
+        out.push('}');
+    }
+    out.push_str("]}\n");
+    out
+}
+
+fn places_json(out: &mut String, summary: &Summary, group: Group) {
+    out.push_str(",\"places\":[");
+    for (i, index) in summary.place_indices(group).into_iter().enumerate() {
+        let place = &summary.places[index];
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('{');
+        field(out, "path", &volumes::usable(&place.path).to_string_lossy());
+        out.push(',');
+        field(out, "label", place.label);
+        let _ = write!(
+            out,
+            ",\"size\":{},\"denied\":{}}}",
+            place.size, place.denied
+        );
+    }
+    out.push(']');
 }
 
 pub fn escape(value: &str) -> String {

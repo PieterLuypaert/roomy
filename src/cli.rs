@@ -4,20 +4,21 @@ use std::path::PathBuf;
 pub const USAGE: &str = "\
 Usage: ruim [PATH] [options]
 
-See where disk space goes. In a terminal ruim opens a browser of PATH
-(your home folder by default); in a pipe it prints the biggest entries.
+See where disk space goes. Plain ruim shows where the whole disk's space
+goes; ruim PATH opens a browser of that folder. In a pipe it prints instead.
 
 Options:
-  -p, --print      print the entries instead of opening the browser
-  -j, --json       print the entries as JSON
-  -d, --depth N    how many folder levels to print (default 1)
+  -p, --print      print instead of opening the full-screen view
+  -j, --json       print as JSON
+  -d, --depth N    how many levels to print (default 1); without PATH,
+                   2 also lists the places in each group
   -h, --help       show this help
   -V, --version    show the version
 
-Keys in the browser:
-  up/down or j/k   move          right/enter or l   open folder
-  left or h, esc   go back       s                  change sort
-  q                quit";
+Keys:
+  up/down or j/k   move          right/enter or l   open
+  left or h, esc   go back       s                  change sort (folders)
+  b                browse the whole disk            q quit";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {
