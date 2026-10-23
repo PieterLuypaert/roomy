@@ -475,12 +475,13 @@ impl App {
         ui::header(frame, top, crumbs, &disk_summary(&self.disk));
         let block = theme::panel("Where the space goes").title_bottom(theme::aside(&self.notes()));
         let inner = ui::framed(frame, body, block);
-        let [bar, pointer, list] = Layout::vertical([
+        let [bar, pointer, rest] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Fill(1),
         ])
         .areas(inner);
+        let [list, strip] = ui::make_room(rest, self.toast.as_ref());
         let bar = bar.inner(Margin::new(1, 0));
         let parts: Vec<(u64, Color, bool)> = self
             .slices
@@ -494,7 +495,7 @@ impl App {
         self.render_slices(frame, list);
         ui::footer(frame, bottom, &OVERVIEW_KEYS);
         if let Some(toast) = &self.toast {
-            ui::show_toast(frame, body, toast);
+            ui::show_toast(frame, strip, toast);
         }
     }
 
@@ -609,11 +610,12 @@ impl App {
         if ui::width(group.about()) <= room {
             block = block.title(theme::aside(group.about()));
         }
-        let list = ui::framed(frame, body, block);
+        let inner = ui::framed(frame, body, block);
+        let [list, strip] = ui::make_room(inner, self.toast.as_ref());
         self.render_place_rows(frame, list, total);
         ui::footer(frame, bottom, &PLACE_KEYS);
         if let Some(toast) = &self.toast {
-            ui::show_toast(frame, body, toast);
+            ui::show_toast(frame, strip, toast);
         }
         if let Some(index) = self.pending {
             let place = &self.summary.places[index];

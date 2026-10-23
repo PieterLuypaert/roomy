@@ -468,11 +468,12 @@ impl Browser {
         let block = theme::panel(crumbs.last().map_or("", String::as_str))
             .title(theme::aside(&format!("by {}", self.sort.label())))
             .title_bottom(theme::aside(&self.trouble()));
-        let list = framed(frame, body, block);
+        let inner = framed(frame, body, block);
+        let [list, strip] = make_room(inner, self.toast.as_ref());
         self.render_rows(frame, list);
         footer(frame, bottom, &KEYS);
         if let Some(toast) = &self.toast {
-            show_toast(frame, body, toast);
+            show_toast(frame, strip, toast);
         }
         if let Some(child) = self.pending {
             let node = &self.current().children[child];
@@ -782,9 +783,17 @@ pub(crate) fn fit_end(text: &str, room: usize) -> String {
 
 /// Splits text into lines of at most `room` characters, breaking between words.
 fn wrap(text: &str, room: usize) -> Vec<String> {
+    let room = room.max(1);
+    let words = text.split_whitespace().flat_map(|word| {
+        let chars: Vec<char> = word.chars().collect();
+        let pieces = chars
+            .chunks(room)
+            .map(|piece| piece.iter().collect::<String>());
+        pieces.collect::<Vec<_>>()
+    });
     let mut lines = Vec::new();
     let mut line = String::new();
-    for word in text.split_whitespace() {
+    for word in words {
         let needed = line.chars().count() + 1 + word.chars().count();
         if !line.is_empty() && needed > room {
             lines.push(std::mem::take(&mut line));
@@ -792,12 +801,22 @@ fn wrap(text: &str, room: usize) -> Vec<String> {
         if !line.is_empty() {
             line.push(' ');
         }
-        line.push_str(word);
+        line.push_str(&word);
     }
     if !line.is_empty() {
         lines.push(line);
     }
     lines
+}
+
+fn toast_lines(toast: &Toast, width: u16) -> Vec<String> {
+    wrap(&toast.text, usize::from(width.saturating_sub(10)).min(56))
+}
+
+/// Splits a strip for the toast off the bottom of `area`, so the toast covers no rows.
+pub(crate) fn make_room(area: Rect, toast: Option<&Toast>) -> [Rect; 2] {
+    let height = toast.map_or(0, |toast| toast_lines(toast, area.width).len() as u16 + 2);
+    Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(area)
 }
 
 /// The header row, the panel between and the key row.
@@ -911,24 +930,22 @@ fn key_hint((key, action): &(&str, &str)) -> [Span<'static>; 2] {
     ]
 }
 
-/// Floats the toast over the bottom right inside the panel at `area`.
-pub(crate) fn show_toast(frame: &mut Frame, area: Rect, toast: &Toast) {
+/// Draws the toast at the right end of the strip `make_room` kept for it.
+pub(crate) fn show_toast(frame: &mut Frame, strip: Rect, toast: &Toast) {
     let (glyph, color) = match toast.tone {
         Tone::Done => ("✓", DONE),
         Tone::Info => ("•", ACCENT),
         Tone::Problem => ("!", WARN),
     };
-    let room = usize::from(area.width.saturating_sub(12)).clamp(1, 56);
-    let lines = wrap(&toast.text, room);
+    let lines = toast_lines(toast, strip.width);
     let longest = lines.iter().map(|line| width(line)).max().unwrap_or(0);
-    let (popup_width, height) = (longest + 6, lines.len() as u16 + 2);
+    let popup_width = longest + 6;
     let popup = Rect {
-        x: area.right().saturating_sub(popup_width + 2),
-        y: area.bottom().saturating_sub(height + 1),
+        x: strip.right().saturating_sub(popup_width + 1),
         width: popup_width,
-        height,
+        ..strip
     }
-    .intersection(area);
+    .intersection(strip);
     let lead = Style::new().fg(color).add_modifier(Modifier::BOLD);
     let marks = std::iter::once(format!("{glyph} ")).chain(std::iter::repeat(String::from("  ")));
     let text: Vec<Line> = marks
@@ -939,7 +956,6 @@ pub(crate) fn show_toast(frame: &mut Frame, area: Rect, toast: &Toast) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(color))
         .padding(Padding::horizontal(1));
-    frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
@@ -1157,6 +1173,10 @@ mod tests {
         assert_eq!(
             wrap("No access to locked. Give your terminal access.", 20),
             ["No access to locked.", "Give your terminal", "access."]
+        );
+        assert_eq!(
+            wrap("Could not move /a/very/long/path", 10),
+            ["Could not", "move", "/a/very/lo", "ng/path"]
         );
     }
 

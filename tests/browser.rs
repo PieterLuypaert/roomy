@@ -322,7 +322,6 @@ fn a_folder_emptied_by_moves_says_so() {
     press(&mut browser, KeyCode::Enter);
     press(&mut browser, KeyCode::Char('d'));
     press(&mut browser, KeyCode::Char('y'));
-    press(&mut browser, KeyCode::Down);
 
     assert!(screen(&mut browser).join("\n").contains("Empty folder"));
 }
