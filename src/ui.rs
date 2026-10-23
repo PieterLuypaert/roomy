@@ -20,6 +20,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::actions::{self, Trasher};
 use crate::detail::{self, Detail};
 use crate::format;
+use crate::help;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, BADGE, DIM, DONE, SELECTION, TRACK, WARN};
 use crate::tree::{Kind, Node};
@@ -227,6 +228,7 @@ pub struct Browser {
     trashed: u64,
     /// Crumbs for what lies above the floor, when the overview opened the browser.
     origin: Option<Vec<String>>,
+    is_helping: bool,
 }
 
 impl Browser {
@@ -248,6 +250,7 @@ impl Browser {
             trasher: actions::trash,
             trashed: 0,
             origin: None,
+            is_helping: false,
         };
         browser.show(None);
         browser
@@ -342,6 +345,10 @@ impl Browser {
     }
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
+        if self.is_helping {
+            self.is_helping = !is_dismissal(event);
+            return Outcome::Continue;
+        }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.toast = None;
@@ -427,6 +434,7 @@ impl Browser {
             KeyCode::Char('o') => self.act(actions::reveal, "Showed it in the Finder."),
             KeyCode::Char('y') => self.act(actions::copy, "Copied the path."),
             KeyCode::Char('d') | KeyCode::Delete => self.ask(),
+            KeyCode::Char('?') => self.is_helping = true,
             _ => {}
         }
         Outcome::Continue
@@ -502,6 +510,9 @@ impl Browser {
             let node = &self.current().children[child];
             let path = format::path(&self.path().join(&*node.name));
             confirm_trash(frame, &node.label(), &path, node.size, node.items);
+        }
+        if self.is_helping {
+            help::render(frame, help::BROWSER);
         }
     }
 
@@ -1032,6 +1043,15 @@ fn session(
         if browser.handle(&next_event()?) == Outcome::Quit {
             return Ok(());
         }
+    }
+}
+
+/// A key press or a click, which closes an overlay.
+pub(crate) fn is_dismissal(event: &Event) -> bool {
+    match event {
+        Event::Key(key) => key.kind == KeyEventKind::Press,
+        Event::Mouse(mouse) => is_click(mouse),
+        _ => false,
     }
 }
 

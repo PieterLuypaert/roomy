@@ -31,11 +31,19 @@ fn sample() -> Browser {
 }
 
 fn screen(browser: &mut Browser) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(90, 10)).unwrap();
+    screen_of(browser, 90, 10)
+}
+
+fn screen_of(browser: &mut Browser, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| browser.render(frame)).unwrap();
     let buffer = terminal.backend().buffer();
-    (0..10)
-        .map(|y| (0..90).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
         .collect()
 }
 
@@ -340,4 +348,24 @@ fn a_folder_emptied_by_moves_says_so() {
     press(&mut browser, KeyCode::Char('y'));
 
     assert!(screen(&mut browser).join("\n").contains("Empty folder"));
+}
+
+#[test]
+fn question_mark_shows_every_key_and_any_key_closes_it() {
+    let mut browser = sample();
+
+    press(&mut browser, KeyCode::Char('?'));
+    let open = screen_of(&mut browser, 90, 24).join("\n");
+    assert!(open.contains("All keys"), "{open}");
+    assert!(open.contains("show it in the Finder"), "{open}");
+    let short = screen_of(&mut browser, 90, 14).join("\n");
+    assert!(
+        short.contains("one row") && short.contains("quit"),
+        "{short}"
+    );
+
+    assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Continue);
+    assert!(!screen(&mut browser).join("\n").contains("All keys"));
+    assert_eq!(browser.selected().unwrap().label(), "movie.mp4");
+    assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Quit);
 }

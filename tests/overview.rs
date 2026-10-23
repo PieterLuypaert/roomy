@@ -287,3 +287,16 @@ fn moving_a_folder_the_browser_was_inside_does_not_break_it() {
     screen(&mut app);
     assert_eq!(app.browser().unwrap().path(), PathBuf::from("/"));
 }
+
+#[test]
+fn question_mark_lists_the_overview_keys_and_the_closing_key_does_nothing_else() {
+    let mut app = app();
+
+    press(&mut app, KeyCode::Char('?'));
+    assert!(screen(&mut app).contains("browse the whole disk"));
+    press(&mut app, KeyCode::Down);
+    assert!(!screen(&mut app).contains("browse the whole disk"));
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.group(), Some(Group::Apps));
+}

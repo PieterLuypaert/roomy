@@ -3,6 +3,7 @@ pub mod categories;
 pub mod cli;
 mod detail;
 pub mod format;
+mod help;
 pub mod overview;
 pub mod print;
 pub mod scan;
