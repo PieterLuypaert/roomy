@@ -12,7 +12,7 @@ use crate::ui;
 /// Below this many columns the list keeps the whole width.
 const MIN_WIDTH: u16 = 100;
 /// The most entries a pane lists, more than any screen shows.
-const MOST: usize = 64;
+pub(crate) const MOST: usize = 64;
 
 /// What the pane beside a list says about the selected entry.
 pub(crate) struct Detail {
@@ -103,10 +103,14 @@ pub(crate) fn biggest(node: &Node) -> Vec<Entry> {
         .iter()
         .filter(|child| !child.is_trashed)
         .collect();
-    children.sort_by_key(|child| std::cmp::Reverse(child.size));
+    let biggest_first = |child: &&Node| std::cmp::Reverse(child.size);
+    if children.len() > MOST {
+        children.select_nth_unstable_by_key(MOST, biggest_first);
+        children.truncate(MOST);
+    }
+    children.sort_by_key(biggest_first);
     children
         .into_iter()
-        .take(MOST)
         .map(|child| Entry {
             label: entry_label(child),
             size: child.size,
@@ -171,4 +175,24 @@ fn entry_line(entry: &Entry, whole: u64, width: u16) -> Line<'static> {
         Span::raw(" ".repeat(gap)),
         Span::styled(size, theme::size(entry.size)),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn biggest_keeps_the_largest_children_biggest_first() {
+        let mut node = Node::dir("big", 0);
+        node.children = (0..200_u64)
+            .map(|i| Node::leaf(format!("f{i}"), Kind::File, i * 37 % 200))
+            .collect();
+
+        let entries = biggest(&node);
+
+        assert_eq!(entries.len(), MOST);
+        assert_eq!(entries[0].size, 199);
+        assert_eq!(entries[MOST - 1].size, 200 - MOST as u64);
+        assert!(entries.windows(2).all(|pair| pair[0].size >= pair[1].size));
+    }
 }

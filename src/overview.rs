@@ -569,6 +569,7 @@ impl App {
         let places = self.summary.place_indices(group);
         places
             .into_iter()
+            .take(detail::MOST)
             .map(|index| &self.summary.places[index])
             .map(|place| Entry {
                 label: short_path(&place.path),
@@ -591,8 +592,11 @@ impl App {
             .max()
             .unwrap_or(0);
         let places = if has_notes { 13 } else { 0 };
-        let about = ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + places + 5);
-        let about = if has_notes { about } else { 0 };
+        let about = if has_notes {
+            ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + places + 5)
+        } else {
+            0
+        };
         let rows: Vec<Row> = self.slices[visible]
             .iter()
             .map(|slice| self.slice_row(slice, usize::from(about)))
