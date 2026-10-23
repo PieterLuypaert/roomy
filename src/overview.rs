@@ -596,15 +596,13 @@ impl App {
             .iter()
             .map(|&i| self.summary.places[i].size)
             .sum();
-        let summary = format!(
-            "{} · {}",
-            format::size(total),
-            format::places(self.shown.len())
-        );
         let crumbs = [self.disk.name.clone(), group.name().to_string()];
-        ui::header(frame, top, &crumbs, &summary);
-        let mut block = theme::panel(group.name());
-        let room = body.width.saturating_sub(ui::width(group.name()) + 10);
+        ui::header(frame, top, &crumbs, &format::size(total));
+        let count = format::places(self.shown.len());
+        let mut block = theme::counted(group.name(), &count);
+        let room = body
+            .width
+            .saturating_sub(ui::width(group.name()) + ui::width(&count) + 13);
         if ui::width(group.about()) <= room {
             block = block.title(theme::aside(group.about()));
         }

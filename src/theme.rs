@@ -31,26 +31,35 @@ const DOCUMENT: Color = Color::Indexed(187);
 const CODE: Color = Color::Indexed(150);
 
 pub(crate) fn panel<'a>(title: &str) -> Block<'a> {
-    titled(title, ACCENT, BORDER)
+    titled(title, None, ACCENT, BORDER)
+}
+
+/// A panel whose title is followed by a quiet count, as in "Panenco ─ 4 items".
+pub(crate) fn counted<'a>(title: &str, count: &str) -> Block<'a> {
+    titled(title, Some(count), ACCENT, BORDER)
 }
 
 /// A panel in red, for a question that cannot be undone.
 pub(crate) fn alert<'a>(title: &str) -> Block<'a> {
-    titled(title, WARN, WARN)
+    titled(title, None, WARN, WARN)
 }
 
-fn titled<'a>(title: &str, color: Color, border: Color) -> Block<'a> {
-    let title = Line::from(vec![
+fn titled<'a>(title: &str, count: Option<&str>, color: Color, border: Color) -> Block<'a> {
+    let mut spans = vec![
         Span::styled("─", Style::new().fg(border)),
         Span::styled(
             format!(" {title} "),
             Style::new().fg(color).add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
+    if let Some(count) = count {
+        spans.push(Span::styled("─", Style::new().fg(border)));
+        spans.push(Span::styled(format!(" {count} "), Style::new().fg(DIM)));
+    }
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(border))
-        .title(title)
+        .title(Line::from(spans))
 }
 
 /// A quiet title for the right end of a panel's border.

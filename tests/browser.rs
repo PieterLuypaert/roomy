@@ -59,7 +59,8 @@ fn shows_the_folder_biggest_first() {
     let lines = screen(&mut browser);
 
     assert!(lines[0].contains("/ › data"), "{}", lines[0]);
-    assert!(lines[0].contains("10.0 kB · 5 items"), "{}", lines[0]);
+    assert!(lines[0].contains("10.0 kB"), "{}", lines[0]);
+    assert!(lines[1].contains("data ─ 3 items"), "{}", lines[1]);
     assert!(
         lines[2].contains("6.0 kB") && lines[2].contains("60%") && lines[2].contains("movie.mp4")
     );
@@ -148,7 +149,7 @@ fn long_item_counts_are_not_cut_off() {
 }
 
 #[test]
-fn a_long_folder_name_leaves_room_for_the_sort_order() {
+fn a_long_folder_name_leaves_room_for_the_count() {
     let long = "a-folder-with-a-name-far-too-long-for-the-border-of-the-panel-that-it-gives-a-title-to-here";
     let inside = Node::with_children(long, vec![Node::leaf("a.txt", Kind::File, 1)]);
     let mut browser = Browser::new(
@@ -159,11 +160,7 @@ fn a_long_folder_name_leaves_room_for_the_sort_order() {
 
     let lines = screen(&mut browser);
 
-    assert!(
-        lines[1].contains("…") && lines[1].contains("by size"),
-        "{}",
-        lines[1]
-    );
+    assert!(lines[1].contains("… ─ 1 item"), "{}", lines[1]);
 }
 
 #[test]

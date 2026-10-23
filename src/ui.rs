@@ -455,20 +455,12 @@ impl Browser {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = screen(frame.area());
-        let current = self.current();
-        let total = format!(
-            "{} · {}",
-            format::size(current.size),
-            format::items(current.items)
-        );
         let crumbs = path_crumbs(&format::path(&self.path()));
-        header(frame, top, &crumbs, &total);
-        let sort = format!("by {}", self.sort.label());
-        let room = usize::from(body.width.saturating_sub(width(&sort) + 10));
+        header(frame, top, &crumbs, &format::size(self.current().size));
+        let count = self.count();
+        let room = usize::from(body.width.saturating_sub(width(&count) + 10));
         let name = fit_end(crumbs.last().map_or("", String::as_str), room);
-        let block = theme::panel(&name)
-            .title(theme::aside(&sort))
-            .title_bottom(theme::aside(&self.trouble()));
+        let block = theme::counted(&name, &count).title_bottom(theme::aside(&self.trouble()));
         let inner = framed(frame, body, block);
         let [list, strip] = make_room(inner, self.toast.as_ref());
         self.render_rows(frame, list);
@@ -480,6 +472,15 @@ impl Browser {
             let node = &self.current().children[child];
             let path = format::path(&self.path().join(&*node.name));
             confirm_trash(frame, &node.label(), &path, node.size, node.items);
+        }
+    }
+
+    /// How many entries the folder shows, and the order when it is not by size.
+    fn count(&self) -> String {
+        let count = format::items(self.rows.len() as u64);
+        match self.sort {
+            Sort::Size => count,
+            sort => format!("{count} · by {}", sort.label()),
         }
     }
 
