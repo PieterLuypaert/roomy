@@ -1,15 +1,17 @@
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, MouseEvent};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
 use crate::format;
 use crate::scan::{self, Progress};
@@ -85,20 +87,13 @@ impl Slice {
     }
 }
 
-pub fn slices(disk: &Disk, summary: &Summary) -> Vec<Slice> {
-    let mut slices: Vec<Slice> = summary
-        .totals
-        .iter()
-        .map(|total| Slice {
-            part: Part::Group(total.group),
-            size: total.size,
-            places: total.places,
-            denied: total.denied,
-            is_blocked: total.is_blocked,
-        })
-        .collect();
+pub fn slices(disk: &Disk, summary: &Summary, moved: u64) -> Vec<Slice> {
+    let mut slices = group_slices(summary, moved);
     let fixed = [
-        (Part::Hidden, disk.data.saturating_sub(summary.size())),
+        (
+            Part::Hidden,
+            disk.data.saturating_sub(summary.size() + moved),
+        ),
         (Part::System, disk.system),
         (Part::Reserved, disk.other()),
         (Part::Free, disk.free),
@@ -117,8 +112,8 @@ pub fn slices(disk: &Disk, summary: &Summary) -> Vec<Slice> {
     slices
 }
 
-pub fn overcount(disk: &Disk, summary: &Summary) -> u64 {
-    summary.size().saturating_sub(disk.data)
+pub fn overcount(disk: &Disk, summary: &Summary, moved: u64) -> u64 {
+    (summary.size() + moved).saturating_sub(disk.data)
 }
 
 pub fn scale(disk: &Disk, slices: &[Slice]) -> u64 {
@@ -127,6 +122,36 @@ pub fn scale(disk: &Disk, slices: &[Slice]) -> u64 {
 
 pub fn overcount_note(extra: u64) -> String {
     format!("{} counted twice (APFS clones)", format::size(extra))
+}
+
+fn group_slices(summary: &Summary, moved: u64) -> Vec<Slice> {
+    let mut slices: Vec<Slice> = summary
+        .totals
+        .iter()
+        .map(|total| Slice {
+            part: Part::Group(total.group),
+            size: total.size,
+            places: total.places,
+            denied: total.denied,
+            is_blocked: total.is_blocked,
+        })
+        .collect();
+    if moved == 0 {
+        return slices;
+    }
+    let trash = Part::Group(Group::Trash);
+    match slices.iter_mut().find(|slice| slice.part == trash) {
+        Some(slice) => slice.size += moved,
+        None => slices.push(Slice {
+            part: trash,
+            size: moved,
+            places: 0,
+            denied: 0,
+            is_blocked: false,
+        }),
+    }
+    slices.sort_by_key(|slice| std::cmp::Reverse(slice.size));
+    slices
 }
 
 pub fn disk_summary(disk: &Disk) -> String {
@@ -179,11 +204,13 @@ pub struct App {
     screen: Screen,
     came_from: Screen,
     status: Option<String>,
+    moved: u64,
+    pending: Option<usize>,
 }
 
 impl App {
     pub fn new(disk: Disk, root: Node, summary: Summary) -> Self {
-        let slices = slices(&disk, &summary);
+        let slices = slices(&disk, &summary, 0);
         let colors = summary.totals.iter().map(|total| total.group).collect();
         let browser = Browser::new(root, disk.scan_root.clone());
         App {
@@ -199,7 +226,14 @@ impl App {
             screen: Screen::Overview,
             came_from: Screen::Overview,
             status: None,
+            moved: 0,
+            pending: None,
         }
+    }
+
+    pub fn with_trasher(mut self, trasher: Trasher) -> Self {
+        self.browser = self.browser.with_trasher(trasher);
+        self
     }
 
     pub fn browser(&self) -> Option<&Browser> {
@@ -216,30 +250,47 @@ impl App {
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
         if self.screen == Screen::Browser {
-            return match self.browser.handle(event) {
-                Outcome::Leave => {
-                    self.screen = self.came_from;
-                    Outcome::Continue
+            return self.handle_browser(event);
+        }
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(*key),
+            Event::Mouse(mouse) if self.pending.is_none() => {
+                if ui::is_click(mouse) {
+                    self.status = None;
                 }
-                outcome => outcome,
-            };
-        }
-        if let Event::Key(key) = event {
-            if key.kind != KeyEventKind::Press {
-                return Outcome::Continue;
+                self.on_pointer(*mouse);
+                Outcome::Continue
             }
-            self.status = None;
-            if ui::is_quit_key(*key) {
-                return Outcome::Quit;
-            }
-            self.on_key(key.code);
+            _ => Outcome::Continue,
         }
-        if let Event::Mouse(mouse) = event {
-            if ui::is_click(mouse) {
-                self.status = None;
-            }
-            self.on_pointer(*mouse);
+    }
+
+    fn handle_browser(&mut self, event: &Event) -> Outcome {
+        let outcome = self.browser.handle(event);
+        let moved = self.browser.take_trashed();
+        if moved > 0 {
+            self.moved += moved;
+            self.refresh();
         }
+        if outcome == Outcome::Leave {
+            self.screen = self.came_from;
+            return Outcome::Continue;
+        }
+        outcome
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> Outcome {
+        self.status = None;
+        if let Some(index) = self.pending.take() {
+            if ui::is_yes(key.code) {
+                self.confirm_place(index);
+            }
+            return Outcome::Continue;
+        }
+        if ui::is_quit_key(key) {
+            return Outcome::Quit;
+        }
+        self.on_key(key.code);
         Outcome::Continue
     }
 
@@ -264,8 +315,72 @@ impl App {
                 Screen::Places,
                 KeyCode::Left | KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('h'),
             ) => self.screen = Screen::Overview,
+            (Screen::Places, KeyCode::Char('o')) => {
+                self.act(actions::reveal, "Showed it in the Finder.");
+            }
+            (Screen::Places, KeyCode::Char('y')) => self.act(actions::copy, "Copied the path."),
+            (Screen::Places, KeyCode::Char('d') | KeyCode::Delete) => self.ask(),
             _ => {}
         }
+    }
+
+    fn selected_place(&self) -> Option<usize> {
+        self.shown.get(self.places.index).copied()
+    }
+
+    fn act(&mut self, action: fn(&Path) -> io::Result<()>, done: &str) {
+        let Some(index) = self.selected_place() else {
+            return;
+        };
+        self.status = Some(match action(&self.summary.places[index].path) {
+            Ok(()) => done.to_string(),
+            Err(err) => format!("That did not work: {err}"),
+        });
+    }
+
+    fn ask(&mut self) {
+        let Some(index) = self.selected_place() else {
+            return;
+        };
+        let place = &self.summary.places[index];
+        let node = self.browser.root().descend(&place.trail);
+        let refusal = if place.is_container {
+            Some(
+                "This row holds the loose files of a folder; open it to pick what to move."
+                    .to_string(),
+            )
+        } else {
+            ui::trash_refusal(node, &place.path)
+        };
+        match refusal {
+            Some(reason) => self.status = Some(reason),
+            None => self.pending = Some(index),
+        }
+    }
+
+    fn confirm_place(&mut self, index: usize) {
+        let place = &self.summary.places[index];
+        let (trail, path) = (place.trail.clone(), place.path.clone());
+        let name = name_of(&path);
+        self.status = Some(match self.browser.trash(&trail, &path) {
+            Ok(size) => {
+                self.moved += size;
+                self.refresh();
+                ui::trashed_message(&name, size)
+            }
+            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+        });
+    }
+
+    fn refresh(&mut self) {
+        let root = self.browser.root();
+        self.summary = categories::summarize(root, &self.disk.scan_root, &volumes::home());
+        self.slices = slices(&self.disk, &self.summary, self.moved);
+        if let Some(group) = self.group {
+            self.shown = self.summary.place_indices(group);
+        }
+        self.overview.move_by(0, self.slices.len());
+        self.places.move_by(0, self.shown.len());
     }
 
     fn on_pointer(&mut self, mouse: MouseEvent) {
@@ -365,7 +480,7 @@ impl App {
         if denied > 0 {
             notes.push(format!("{} no access", format::count(denied)));
         }
-        let extra = overcount(&self.disk, &self.summary);
+        let extra = overcount(&self.disk, &self.summary, self.moved);
         if extra > 0 {
             notes.push(overcount_note(extra));
         }
@@ -451,10 +566,18 @@ impl App {
             ("↑↓", "move"),
             ("→", "open"),
             ("←", "back"),
-            ("b", "browse all"),
+            ("o", "finder"),
+            ("y", "copy path"),
+            ("d", "trash"),
             ("q", "quit"),
         ];
         ui::footer(frame, bottom, &keys, self.status.as_deref(), "");
+        if let Some(index) = self.pending {
+            let place = &self.summary.places[index];
+            let node = self.browser.root().descend(&place.trail);
+            let path = format::path(&place.path);
+            ui::confirm_trash(frame, &name_of(&place.path), &path, node.size, node.items);
+        }
     }
 
     fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64) {
@@ -524,6 +647,13 @@ fn access_note(is_blocked: bool, denied: u64) -> Option<Span<'static>> {
         Style::new().fg(DIM)
     };
     Some(Span::styled(format!("  {note}"), style))
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 fn hidden_reason(disk: &Disk) -> String {

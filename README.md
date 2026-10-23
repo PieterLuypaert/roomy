@@ -16,7 +16,9 @@ ruim --json -d 2 ~   # the same as JSON, two levels deep
 
 Plain `ruim` scans the whole disk and sorts every byte into one group, such as apps,
 caches, project dependencies or Docker, next to what macOS itself and free space take.
-Open a group to see its biggest places, and a place to browse its folders.
+Open a group to see its biggest places, and a place to browse its folders. On a place
+or an entry, `o` shows it in the Finder, `y` copies its path and `d` moves it to the
+Trash after asking.
 
 ruim counts the space files take on disk, counts hard links once and stays on one disk.
 Folders macOS keeps private show up as "no access"; give your terminal Full Disk Access

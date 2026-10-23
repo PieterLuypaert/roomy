@@ -294,6 +294,7 @@ pub struct Place {
     pub size: u64,
     pub denied: u64,
     pub is_blocked: bool,
+    pub is_container: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,7 +445,7 @@ impl Walk {
     ) {
         let (owner, split) = self.claim(node, siblings, owner, split);
         let Some(owner) = owner else {
-            let index = self.start(Group::System, "other", node.is_denied);
+            let index = self.start(Group::System, "other", node.is_denied, true);
             return self.visit_contents(node, index, split);
         };
         self.visit_contents(node, owner, split);
@@ -482,19 +483,25 @@ impl Walk {
                 matches!(rule.pattern, Pattern::Path(_)) || host.is_none_or(Group::hosts_projects)
             });
         if let Some(rule) = rule {
-            let index = self.start(rule.group, rule.label, node.is_denied);
+            let index = self.start(rule.group, rule.label, node.is_denied, rule.is_split);
             return (Some(index), rule.is_split.then_some(rule));
         }
         match split {
             Some(rule) => (
-                Some(self.start(rule.group, rule.label, node.is_denied)),
+                Some(self.start(rule.group, rule.label, node.is_denied, false)),
                 None,
             ),
             None => (owner, None),
         }
     }
 
-    fn start(&mut self, group: Group, label: &'static str, is_blocked: bool) -> usize {
+    fn start(
+        &mut self,
+        group: Group,
+        label: &'static str,
+        is_blocked: bool,
+        is_container: bool,
+    ) -> usize {
         self.places.push(Place {
             group,
             label,
@@ -503,6 +510,7 @@ impl Walk {
             size: 0,
             denied: 0,
             is_blocked,
+            is_container,
         });
         self.places.len() - 1
     }

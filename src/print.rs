@@ -112,7 +112,7 @@ pub fn summary_text(disk: &Disk, summary: &Summary, depth: usize) -> String {
         let _ = write!(out, " ({} purgeable)", format::size(purgeable));
     }
     out.push_str("\n\n");
-    let slices = overview::slices(disk, summary);
+    let slices = overview::slices(disk, summary, 0);
     let scale = overview::scale(disk, &slices);
     for slice in &slices {
         let share = format::percent(format::share(slice.size, scale));
@@ -123,7 +123,7 @@ pub fn summary_text(disk: &Disk, summary: &Summary, depth: usize) -> String {
             places_text(&mut out, summary, group);
         }
     }
-    let extra = overview::overcount(disk, summary);
+    let extra = overview::overcount(disk, summary, 0);
     if extra > 0 {
         let _ = writeln!(out, "\nNote: {}.", overview::overcount_note(extra));
     }
@@ -172,7 +172,7 @@ pub fn summary_json(disk: &Disk, summary: &Summary, depth: usize) -> String {
         disk.used(),
         disk.free
     );
-    for (i, slice) in overview::slices(disk, summary).iter().enumerate() {
+    for (i, slice) in overview::slices(disk, summary, 0).iter().enumerate() {
         if i > 0 {
             out.push(',');
         }

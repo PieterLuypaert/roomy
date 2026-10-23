@@ -72,7 +72,7 @@ fn slices_add_up_to_the_whole_disk() {
     let root = tree();
     let summary = summarize(&root, Path::new("/"), Path::new("/Users/ann"));
 
-    let parts = slices(&disk(30_500), &summary);
+    let parts = slices(&disk(30_500), &summary, 0);
 
     let sizes: Vec<(Part, u64)> = parts.iter().map(|s| (s.part, s.size)).collect();
     assert_eq!(
@@ -95,10 +95,10 @@ fn nothing_is_hidden_when_the_scan_saw_everything() {
     let root = tree();
     let summary = summarize(&root, Path::new("/"), Path::new("/Users/ann"));
 
-    let parts = slices(&disk(20_000), &summary);
+    let parts = slices(&disk(20_000), &summary, 0);
 
     assert!(parts.iter().all(|slice| slice.part != Part::Hidden));
-    assert_eq!(overcount(&disk(20_000), &summary), 3_500);
+    assert_eq!(overcount(&disk(20_000), &summary, 0), 3_500);
     assert_eq!(scale(&disk(20_000), &parts), 103_500);
 }
 
@@ -198,4 +198,75 @@ fn the_text_summary_flags_space_counted_twice() {
         out.ends_with("Note: 3.5 kB counted twice (APFS clones).\n"),
         "{out}"
     );
+}
+
+fn keep_quiet(_: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[test]
+fn trashing_a_place_moves_its_bytes_to_the_trash_group() {
+    let mut app = app().with_trasher(keep_quiet);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+
+    press(&mut app, KeyCode::Char('d'));
+    assert!(screen(&mut app).contains("Move to the Trash?"));
+    press(&mut app, KeyCode::Char('y'));
+
+    assert!(
+        app.status()
+            .unwrap()
+            .contains("Moved node_modules (3.0 kB)")
+    );
+    assert!(!screen(&mut app).contains("node_modules  "));
+    press(&mut app, KeyCode::Esc);
+    let text = screen(&mut app);
+    assert!(text.contains("Trash"), "{text}");
+    assert!(text.contains("   7.0 kB   7% ■ Hidden from ruim"), "{text}");
+}
+
+#[test]
+fn rows_that_stand_for_loose_files_are_not_trashed() {
+    let mut ann = Node::dir("ann", 4_096);
+    ann.children.push(Node::leaf("notes.txt", Kind::File, 50));
+    ann.finish();
+    let root = Node::with_children("/", vec![Node::with_children("Users", vec![ann])]);
+    let summary = summarize(&root, Path::new("/"), Path::new("/Users/ann"));
+    let mut app = App::new(disk(30_500), root, summary).with_trasher(keep_quiet);
+    press(&mut app, KeyCode::Enter);
+
+    press(&mut app, KeyCode::Char('d'));
+
+    assert!(
+        app.status().unwrap().contains("loose files"),
+        "{:?}",
+        app.status()
+    );
+}
+
+#[test]
+fn moving_a_folder_the_browser_was_inside_does_not_break_it() {
+    let mut app = app().with_trasher(keep_quiet);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.browser().is_some());
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Esc);
+
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.group(), Some(Group::Documents));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(
+        app.status().unwrap().contains("Moved app"),
+        "{:?}",
+        app.status()
+    );
+
+    press(&mut app, KeyCode::Char('b'));
+    screen(&mut app);
+    assert_eq!(app.browser().unwrap().path(), PathBuf::from("/"));
 }
