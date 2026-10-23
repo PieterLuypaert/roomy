@@ -15,7 +15,7 @@ use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
 use crate::format;
 use crate::scan::{self, Progress};
-use crate::theme::{ACCENT, DIM, SELECTION, TRACK, WARN};
+use crate::theme::{self, ACCENT, DIM, SELECTION, TRACK, WARN};
 use crate::tree::Node;
 use crate::ui::{self, Browser, Cursor, Outcome, Pointer};
 use crate::volumes::{self, Disk};
@@ -534,7 +534,9 @@ impl App {
         }
         let dim = Style::new().fg(DIM);
         Row::new([
-            Cell::from(Line::from(format::size(slice.size)).right_aligned()),
+            Cell::from(
+                Line::styled(format::size(slice.size), theme::size(slice.size)).right_aligned(),
+            ),
             Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
             Cell::from(Span::styled(
                 swatch,
@@ -632,7 +634,7 @@ fn place_row(place: &Place, total: u64, columns: &PlaceColumns) -> Row<'static> 
     path.extend(note);
     let dim = Style::new().fg(DIM);
     Row::new([
-        Cell::from(Line::from(format::size(place.size)).right_aligned()),
+        Cell::from(Line::styled(format::size(place.size), theme::size(place.size)).right_aligned()),
         Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
         Cell::from(ui::bar_line(share, columns.bar)),
         Cell::from(Line::from(path)),

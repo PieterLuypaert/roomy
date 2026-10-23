@@ -518,9 +518,10 @@ pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64
 }
 
 fn popup_lines(name: &str, path: &str, size: u64, items: u64, room: usize) -> Vec<Line<'static>> {
-    let mut amount = format::size(size);
+    let mut amount = vec![Span::styled(format::size(size), theme::size(size))];
     if items > 0 {
-        amount = format!("{amount} · {}", format::items(items));
+        let items = format!(" · {}", format::items(items));
+        amount.push(Span::styled(items, Style::new().fg(DIM)));
     }
     vec![
         Line::styled(
@@ -528,7 +529,7 @@ fn popup_lines(name: &str, path: &str, size: u64, items: u64, room: usize) -> Ve
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Line::styled(fit_start(path, room), Style::new().fg(DIM)),
-        Line::raw(amount),
+        Line::from(amount),
         Line::raw(""),
         Line::from(vec![
             Span::styled(" y ", Style::new().add_modifier(Modifier::BOLD)),
@@ -605,7 +606,7 @@ fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
     };
     let dim = Style::new().fg(DIM);
     Row::new([
-        Cell::from(Line::from(format::size(node.size)).right_aligned()),
+        Cell::from(Line::styled(format::size(node.size), theme::size(node.size)).right_aligned()),
         Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
         Cell::from(bar_line(share, columns.bar)),
         Cell::from(name(node)),
@@ -624,34 +625,39 @@ pub(crate) fn bar_line(share: f64, width: u16) -> Line<'static> {
 
 fn name(node: &Node) -> Line<'_> {
     let label = node.label();
-    let slash = if node.is_dir() { "/" } else { "" };
+    let (slash, glyph) = if node.is_dir() {
+        ("/", Span::styled("▸ ", Style::new().fg(ACCENT)))
+    } else {
+        ("", Span::raw("  "))
+    };
     let dir = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
     let warn = Style::new().fg(WARN);
     let note = |text: &'static str| Span::styled(text, warn.add_modifier(Modifier::DIM));
-    match node.kind {
-        _ if node.is_denied => Line::from(vec![
+    let rest = match node.kind {
+        _ if node.is_denied => vec![
             Span::styled(format!("{label}{slash}"), warn),
             note("  no access"),
-        ]),
-        _ if node.is_unreadable && node.children.is_empty() => Line::from(vec![
+        ],
+        _ if node.is_unreadable && node.children.is_empty() => vec![
             Span::styled(format!("{label}{slash}"), warn),
             note("  unreadable"),
-        ]),
-        _ if node.is_unreadable => Line::from(vec![
+        ],
+        _ if node.is_unreadable => vec![
             Span::styled(format!("{label}/"), dir),
             note("  partly unreadable"),
-        ]),
-        _ if node.is_mount => Line::from(vec![
+        ],
+        _ if node.is_mount => vec![
             Span::styled(format!("{label}/"), dir),
             Span::styled("  other disk", Style::new().fg(DIM)),
-        ]),
-        Kind::Dir => Line::from(Span::styled(format!("{label}/"), dir)),
-        Kind::Link => Line::from(vec![
-            Span::raw(label),
+        ],
+        Kind::Dir => vec![Span::styled(format!("{label}/"), dir)],
+        Kind::Link => vec![
+            Span::styled(label, theme::file(&node.name)),
             Span::styled(" →", Style::new().fg(DIM)),
-        ]),
-        Kind::File | Kind::Other => Line::from(label),
-    }
+        ],
+        Kind::File | Kind::Other => vec![Span::styled(label, theme::file(&node.name))],
+    };
+    Line::from([vec![glyph], rest].concat())
 }
 
 fn scrolled(offset: usize, cursor: usize, height: usize) -> usize {
