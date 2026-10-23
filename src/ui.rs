@@ -685,12 +685,7 @@ fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
 }
 
 pub(crate) fn bar_line(share: f64, width: u16) -> Line<'static> {
-    let filled = bar(share, width);
-    let rest = usize::from(width).saturating_sub(filled.chars().count());
-    Line::from(vec![
-        Span::styled(filled, Style::new().fg(theme::heat(share))),
-        Span::styled("·".repeat(rest), Style::new().fg(TRACK)),
-    ])
+    Line::styled(bar(share, width), Style::new().fg(theme::heat(share)))
 }
 
 fn name(node: &Node) -> Line<'_> {
@@ -901,7 +896,7 @@ fn crumbs_width(crumbs: &[String], shown: usize) -> usize {
     names + separator * (shown - 1) + hidden
 }
 
-/// Key hints as keycaps: as many as fit, and always the last one.
+/// Key hints as keycaps: as many as fit, and always the last one, at the right end.
 pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
     let Some((last, rest)) = keys.split_last() else {
         return;
@@ -916,8 +911,9 @@ pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
         }
         spans.extend(key_hint(hint));
     }
-    spans.extend(key_hint(last));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let last = Line::from(Vec::from(key_hint(last))).right_aligned();
+    frame.render_widget(Paragraph::new(last), area);
 }
 
 fn key_hint((key, action): &(&str, &str)) -> [Span<'static>; 2] {
