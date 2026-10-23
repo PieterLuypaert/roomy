@@ -4,11 +4,11 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use ruim::categories::summarize;
-use ruim::overview::App;
-use ruim::tree::{Kind, Node};
-use ruim::ui::Browser;
-use ruim::volumes::Disk;
+use roomy::categories::summarize;
+use roomy::overview::App;
+use roomy::tree::{Kind, Node};
+use roomy::ui::Browser;
+use roomy::volumes::Disk;
 
 fn browser() -> Browser {
     let modules = Node::with_children(

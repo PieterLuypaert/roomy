@@ -71,7 +71,7 @@ impl Slice {
     pub fn name(&self) -> &'static str {
         match self.part {
             Part::Group(group) => group.name(),
-            Part::Hidden => "Hidden from ruim",
+            Part::Hidden => "Hidden from roomy",
             Part::System => "macOS",
             Part::Reserved if cfg!(target_os = "macos") => "System volumes",
             Part::Reserved => "Reserved",
@@ -85,7 +85,7 @@ impl Slice {
             Part::Hidden if disk.is_apfs => {
                 "folders that need Full Disk Access, local snapshots and purgeable space"
             }
-            Part::Hidden => "folders ruim may not read and filesystem metadata",
+            Part::Hidden => "folders roomy may not read and filesystem metadata",
             Part::System => "the sealed, read-only system volume",
             Part::Reserved if disk.is_apfs => {
                 "Preboot, VM (swap and sleep image), Update and Recovery"
@@ -818,7 +818,7 @@ fn hidden_reason(disk: &Disk) -> String {
             format::ACCESS_HINT
         )
     } else {
-        format!("ruim could not read this. {}", format::ACCESS_HINT)
+        format!("roomy could not read this. {}", format::ACCESS_HINT)
     }
 }
 

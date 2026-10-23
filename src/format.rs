@@ -7,7 +7,7 @@ const UNITS: [&str; 6] = ["kB", "MB", "GB", "TB", "PB", "EB"];
 pub const ACCESS_HINT: &str = if cfg!(target_os = "macos") {
     "Give your terminal Full Disk Access to look inside."
 } else {
-    "Run ruim as a user who may read it to look inside."
+    "Run roomy as a user who may read it to look inside."
 };
 
 pub fn size(bytes: u64) -> String {
