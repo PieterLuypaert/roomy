@@ -138,3 +138,26 @@ fn the_places_pane_shows_what_a_place_holds() {
     assert!(screen.contains("100% of Project"), "{screen}");
     assert!(screen.contains("a.js"), "{screen}");
 }
+
+#[test]
+fn a_loose_files_row_is_not_described_as_its_whole_folder() {
+    let mut ann = Node::dir("ann", 4_096);
+    ann.children.push(Node::leaf("notes.txt", Kind::File, 50));
+    ann.finish();
+    let root = Node::with_children("/", vec![Node::with_children("Users", vec![ann])]);
+    let summary = summarize(&root, Path::new("/"), Path::new("/Users/ann"));
+    let mut app = App::new(disk(), root, summary);
+    app.handle(&Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let screen = text(120, 16, |frame| app.render(frame)).join("\n");
+
+    assert!(
+        screen.contains("the loose files in this folder"),
+        "{screen}"
+    );
+    assert!(!screen.contains("1 item"), "{screen}");
+    assert!(!screen.contains("biggest inside"), "{screen}");
+}

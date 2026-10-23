@@ -56,9 +56,8 @@ pub(crate) fn of_node(node: &Node, size: u64, of: &str, whole: u64) -> Detail {
     } else if node.is_mount {
         facts.push(Line::styled("another disk", Style::new().fg(DIM)));
     }
-    let slash = if node.is_dir() { "/" } else { "" };
     Detail {
-        title: format!("{}{slash}", node.label()),
+        title: entry_label(node),
         size,
         share: format::share(size, whole),
         of: of.to_string(),
@@ -84,7 +83,8 @@ fn amount(detail: &Detail, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-fn kind(node: &Node) -> String {
+/// The item count of a folder, or what kind of entry anything else is.
+pub(crate) fn kind(node: &Node) -> String {
     match node.kind {
         Kind::Dir => format::items(node.items),
         Kind::File => "file".to_string(),
@@ -93,7 +93,7 @@ fn kind(node: &Node) -> String {
     }
 }
 
-fn biggest(node: &Node) -> Vec<Entry> {
+pub(crate) fn biggest(node: &Node) -> Vec<Entry> {
     let mut children: Vec<&Node> = node
         .children
         .iter()
@@ -111,7 +111,8 @@ fn biggest(node: &Node) -> Vec<Entry> {
         .collect()
 }
 
-fn entry_label(node: &Node) -> String {
+/// The name, with a slash for a folder.
+pub(crate) fn entry_label(node: &Node) -> String {
     let slash = if node.is_dir() { "/" } else { "" };
     format!("{}{slash}", node.label())
 }

@@ -683,24 +683,43 @@ impl App {
     fn place_detail(&self, group: Group, total: u64) -> Option<Detail> {
         let place = &self.summary.places[*self.shown.get(self.places.index)?];
         let node = self.browser.root().descend(&place.trail);
-        let mut detail = detail::of_node(node, place.size, group.name(), total);
-        if node.size > place.size && !place.is_container {
-            let whole = format!("{} in the whole folder", format::size(node.size));
-            detail
-                .facts
-                .insert(1, Line::styled(whole, Style::new().fg(DIM)));
-        }
+        let dim = Style::new().fg(DIM);
+        let mut facts = Vec::new();
         if place.is_container {
-            detail.facts.truncate(1);
-            detail
-                .facts
-                .push(Line::styled("loose files", Style::new().fg(DIM)));
-            detail.inside.clear();
+            facts.push(Line::styled("the loose files in this folder", dim));
+        } else {
+            facts.push(Line::styled(detail::kind(node), dim));
+            if node.size > place.size {
+                let whole = format!("{} in the whole folder", format::size(node.size));
+                facts.push(Line::styled(whole, dim));
+            }
         }
-        detail
-            .facts
-            .push(Line::styled(place.label, Style::new().fg(DIM)));
-        Some(detail)
+        if let Some(note) = format::access(place.is_blocked, place.denied) {
+            let color = if place.is_blocked { WARN } else { DIM };
+            facts.push(Line::styled(note, Style::new().fg(color)));
+        }
+        facts.push(Line::styled(place.label, dim));
+        let about = if place.is_blocked {
+            format::ACCESS_HINT
+        } else {
+            ""
+        };
+        let inside = if place.is_container {
+            Vec::new()
+        } else {
+            detail::biggest(node)
+        };
+        Some(Detail {
+            title: detail::entry_label(node),
+            size: place.size,
+            share: format::share(place.size, total),
+            of: group.name().to_string(),
+            facts,
+            about: about.to_string(),
+            heading: "biggest inside",
+            inside,
+            whole: node.size,
+        })
     }
 
     /// The list of places; beside a pane it leaves the labels to it.
