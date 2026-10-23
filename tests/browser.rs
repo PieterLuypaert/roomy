@@ -189,3 +189,140 @@ fn a_click_clears_the_last_message() {
 
     assert!(browser.status().is_none());
 }
+
+static MOVED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn record(path: &std::path::Path) -> std::io::Result<()> {
+    MOVED.lock().unwrap().push(path.to_path_buf());
+    Ok(())
+}
+
+fn refuse(_: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("the disk is read-only"))
+}
+
+#[test]
+fn trash_asks_first_and_then_moves_the_entry() {
+    let mut browser = sample().with_trasher(record);
+
+    press(&mut browser, KeyCode::Char('d'));
+    assert!(
+        screen(&mut browser)
+            .join("\n")
+            .contains("Move to the Trash?")
+    );
+    press(&mut browser, KeyCode::Char('y'));
+
+    assert!(
+        MOVED
+            .lock()
+            .unwrap()
+            .contains(&PathBuf::from("/data/movie.mp4"))
+    );
+    assert_eq!(browser.current().size, 4_000);
+    assert_eq!(browser.selected().unwrap().label(), "Documents");
+    assert!(
+        browser
+            .status()
+            .unwrap()
+            .contains("Moved movie.mp4 (6.0 kB) to the Trash")
+    );
+    assert_eq!(browser.take_trashed(), 6_000);
+    assert!(!screen(&mut browser).join("\n").contains("movie.mp4  "));
+}
+
+#[test]
+fn any_other_key_keeps_the_entry() {
+    let mut browser = sample().with_trasher(refuse);
+
+    press(&mut browser, KeyCode::Char('d'));
+    press(&mut browser, KeyCode::Char('n'));
+
+    assert_eq!(browser.current().size, 10_000);
+    assert_eq!(browser.selected().unwrap().label(), "movie.mp4");
+    assert_eq!(browser.take_trashed(), 0);
+}
+
+#[test]
+fn a_failed_move_leaves_the_tree_alone() {
+    let mut browser = sample().with_trasher(refuse);
+
+    press(&mut browser, KeyCode::Char('d'));
+    press(&mut browser, KeyCode::Char('y'));
+
+    assert_eq!(browser.current().size, 10_000);
+    assert!(browser.status().unwrap().contains("the disk is read-only"));
+}
+
+#[test]
+fn locked_folders_are_not_offered_for_the_trash() {
+    let mut browser = sample().with_trasher(refuse);
+
+    press(&mut browser, KeyCode::End);
+    press(&mut browser, KeyCode::Char('d'));
+
+    assert!(
+        !screen(&mut browser)
+            .join("\n")
+            .contains("Move to the Trash?")
+    );
+    assert!(
+        browser
+            .status()
+            .unwrap()
+            .contains("cannot see inside locked")
+    );
+}
+
+fn keep(_: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[test]
+fn enter_does_not_confirm_a_move() {
+    let mut browser = sample().with_trasher(keep);
+
+    press(&mut browser, KeyCode::Char('d'));
+    press(&mut browser, KeyCode::Enter);
+
+    assert_eq!(browser.current().size, 10_000);
+    assert_eq!(browser.take_trashed(), 0);
+}
+
+#[test]
+fn size_order_follows_a_move() {
+    let big = Node::with_children(
+        "big",
+        vec![
+            Node::leaf("huge.bin", Kind::File, 9_000),
+            Node::leaf("small.bin", Kind::File, 1_000),
+        ],
+    );
+    let root = Node::with_children("/data", vec![big, Node::leaf("mid.bin", Kind::File, 5_000)]);
+    let mut browser = Browser::new(root, PathBuf::from("/data")).with_trasher(keep);
+
+    press(&mut browser, KeyCode::Enter);
+    press(&mut browser, KeyCode::Char('d'));
+    press(&mut browser, KeyCode::Char('y'));
+    press(&mut browser, KeyCode::Left);
+
+    let lines = screen(&mut browser);
+    assert!(lines[2].contains("mid.bin"), "{}", lines[2]);
+    assert!(lines[3].contains("big/"), "{}", lines[3]);
+}
+
+#[test]
+fn a_folder_emptied_by_moves_says_so() {
+    let only = Node::with_children("box", vec![Node::leaf("thing", Kind::File, 10)]);
+    let mut browser = Browser::new(
+        Node::with_children("/data", vec![only]),
+        PathBuf::from("/data"),
+    )
+    .with_trasher(keep);
+
+    press(&mut browser, KeyCode::Enter);
+    press(&mut browser, KeyCode::Char('d'));
+    press(&mut browser, KeyCode::Char('y'));
+
+    assert!(screen(&mut browser).join("\n").contains("Empty folder"));
+}

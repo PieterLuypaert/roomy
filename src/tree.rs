@@ -18,6 +18,7 @@ pub struct Node {
     pub is_denied: bool,
     pub is_unreadable: bool,
     pub is_mount: bool,
+    pub is_trashed: bool,
     pub children: Vec<Node>,
 }
 
@@ -31,6 +32,7 @@ impl Node {
             is_denied: false,
             is_unreadable: false,
             is_mount: false,
+            is_trashed: false,
             children: Vec::new(),
         }
     }
@@ -63,10 +65,44 @@ impl Node {
         self.children.shrink_to_fit();
     }
 
+    pub fn get(&self, trail: &[usize]) -> Option<&Node> {
+        trail
+            .iter()
+            .try_fold(self, |node, &index| node.children.get(index))
+    }
+
     pub fn descend(&self, trail: &[usize]) -> &Node {
         trail
             .iter()
             .fold(self, |node, &index| &node.children[index])
+    }
+
+    /// Empties the entry at `trail` in place, so every other trail into the tree stays valid.
+    pub fn trash(&mut self, trail: &[usize]) -> Option<u64> {
+        let (&last, parents) = trail.split_last()?;
+        let mut node = &mut *self;
+        for &index in parents {
+            node = node.children.get_mut(index)?;
+        }
+        let target = node
+            .children
+            .get_mut(last)
+            .filter(|target| !target.is_trashed)?;
+        let (size, items) = (target.size, target.items + 1);
+        *target = Node::leaf(&*target.name, target.kind, 0);
+        target.is_trashed = true;
+        let mut node = &mut *self;
+        node.shrink(size, items);
+        for &index in parents {
+            node = &mut node.children[index];
+            node.shrink(size, items);
+        }
+        Some(size)
+    }
+
+    fn shrink(&mut self, size: u64, items: u64) {
+        self.size = self.size.saturating_sub(size);
+        self.items = self.items.saturating_sub(items);
     }
 
     pub fn count_where(&self, test: fn(&Node) -> bool) -> u64 {
@@ -102,6 +138,33 @@ mod tests {
             .map(|c| c.label().into_owned())
             .collect();
         assert_eq!(names, ["sub", "mid", "small"]);
+    }
+
+    #[test]
+    fn trash_empties_the_entry_and_shrinks_its_folders() {
+        let mut node = Node::with_children(
+            "root",
+            vec![
+                Node::with_children(
+                    "a",
+                    vec![
+                        Node::with_children("b", vec![Node::leaf("c", Kind::File, 30)]),
+                        Node::leaf("d", Kind::File, 5),
+                    ],
+                ),
+                Node::leaf("e", Kind::File, 1),
+            ],
+        );
+
+        assert_eq!(node.trash(&[0, 0]), Some(30));
+
+        assert_eq!((node.size, node.items), (6, 3));
+        assert_eq!((node.children[0].size, node.children[0].items), (5, 1));
+        let b = &node.children[0].children[0];
+        assert!(b.is_trashed && b.children.is_empty() && b.size == 0);
+        assert_eq!(node.trash(&[0, 0]), None);
+        assert_eq!(node.trash(&[]), None);
+        assert_eq!(node.trash(&[7]), None);
     }
 
     #[test]
