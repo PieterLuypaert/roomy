@@ -308,11 +308,6 @@ impl Browser {
         self.toast.as_ref().map(Toast::text)
     }
 
-    /// Heads the breadcrumbs with `origin` in place of the path above the floor.
-    pub fn set_origin(&mut self, origin: Vec<String>) {
-        self.origin = Some(origin);
-    }
-
     fn crumbs(&self) -> Vec<String> {
         let Some(origin) = &self.origin else {
             return path_crumbs(&format::path(&self.path()));
@@ -328,8 +323,9 @@ impl Browser {
     }
 
     /// Shows the folder at `trail`, or the folder holding it when it is a file or does not
-    /// open; back stops there.
-    pub fn jump(&mut self, mut trail: Vec<usize>) {
+    /// open; back stops there. An `origin` heads the breadcrumbs in place of the path above.
+    pub fn jump(&mut self, mut trail: Vec<usize>, origin: Option<Vec<String>>) {
+        self.origin = origin;
         let target = self.root.descend(&trail);
         let reason = refusal(target);
         let opens = trail.is_empty() || (target.is_dir() && reason.is_none());

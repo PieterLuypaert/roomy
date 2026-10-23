@@ -185,7 +185,7 @@ fn scrolls_to_keep_the_cursor_on_screen() {
 fn jumping_to_a_locked_folder_shows_why_from_its_parent() {
     let mut browser = sample();
 
-    browser.jump(vec![2]);
+    browser.jump(vec![2], None);
 
     assert_eq!(browser.path(), PathBuf::from("/data"));
     assert_eq!(browser.selected().unwrap().label(), "locked");

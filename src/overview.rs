@@ -436,16 +436,15 @@ impl App {
         let (Some(&index), Some(group)) = (self.shown.get(self.places.index), self.group) else {
             return;
         };
-        let origin = vec![self.disk.name.clone(), group.name().to_string()];
-        self.browser.set_origin(origin);
-        self.browser.jump(self.summary.places[index].trail.clone());
+        let trail = self.summary.places[index].trail.clone();
+        self.browser.jump(trail, Some(self.group_crumbs(group)));
         self.came_from = Screen::Places;
         self.screen = Screen::Browser;
     }
 
     fn browse_all(&mut self) {
-        self.browser.set_origin(vec![self.disk.name.clone()]);
-        self.browser.jump(Vec::new());
+        self.browser
+            .jump(Vec::new(), Some(vec![self.disk.name.clone()]));
         self.came_from = self.screen;
         self.screen = Screen::Browser;
     }
@@ -599,8 +598,7 @@ impl App {
             .iter()
             .map(|&i| self.summary.places[i].size)
             .sum();
-        let crumbs = [self.disk.name.clone(), group.name().to_string()];
-        ui::header(frame, top, &crumbs, &format::size(total));
+        ui::header(frame, top, &self.group_crumbs(group), &format::size(total));
         let count = format::places(self.shown.len());
         let mut block = theme::counted(group.name(), &count);
         let room = body
@@ -622,6 +620,10 @@ impl App {
             let path = format::path(&place.path);
             ui::confirm_trash(frame, &name_of(&place.path), &path, node.size, node.items);
         }
+    }
+
+    fn group_crumbs(&self, group: Group) -> Vec<String> {
+        vec![self.disk.name.clone(), group.name().to_string()]
     }
 
     fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64) {
