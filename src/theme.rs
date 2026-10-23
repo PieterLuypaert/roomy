@@ -31,16 +31,25 @@ const DOCUMENT: Color = Color::Indexed(187);
 const CODE: Color = Color::Indexed(150);
 
 pub(crate) fn panel<'a>(title: &str) -> Block<'a> {
+    titled(title, ACCENT, BORDER)
+}
+
+/// A panel in red, for a question that cannot be undone.
+pub(crate) fn alert<'a>(title: &str) -> Block<'a> {
+    titled(title, WARN, WARN)
+}
+
+fn titled<'a>(title: &str, color: Color, border: Color) -> Block<'a> {
     let title = Line::from(vec![
-        Span::styled("─", Style::new().fg(BORDER)),
+        Span::styled("─", Style::new().fg(border)),
         Span::styled(
             format!(" {title} "),
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
         ),
     ]);
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(BORDER))
+        .border_style(Style::new().fg(border))
         .title(title)
 }
 
@@ -60,8 +69,10 @@ pub(crate) fn keycap(key: &str) -> Span<'static> {
     Span::styled(format!(" {key} "), KEYCAP)
 }
 
+pub(crate) const MARKER: &str = "▌";
+
 pub(crate) fn marker() -> Line<'static> {
-    Line::styled("▌", Style::new().fg(ACCENT))
+    Line::styled(MARKER, Style::new().fg(ACCENT))
 }
 
 /// Brighter the more of its folder an entry takes.

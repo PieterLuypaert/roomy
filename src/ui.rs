@@ -65,25 +65,23 @@ pub(crate) struct Toast {
 }
 
 impl Toast {
-    pub(crate) fn done(text: impl Into<String>) -> Self {
+    fn new(text: impl Into<String>, tone: Tone) -> Self {
         Toast {
             text: text.into(),
-            tone: Tone::Done,
+            tone,
         }
+    }
+
+    pub(crate) fn done(text: impl Into<String>) -> Self {
+        Toast::new(text, Tone::Done)
     }
 
     pub(crate) fn info(text: impl Into<String>) -> Self {
-        Toast {
-            text: text.into(),
-            tone: Tone::Info,
-        }
+        Toast::new(text, Tone::Info)
     }
 
     pub(crate) fn problem(text: impl Into<String>) -> Self {
-        Toast {
-            text: text.into(),
-            tone: Tone::Problem,
-        }
+        Toast::new(text, Tone::Problem)
     }
 
     pub(crate) fn text(&self) -> &str {
@@ -500,7 +498,7 @@ impl Browser {
             return;
         }
         let visible = self.cursor.window(area, self.rows.len());
-        let columns = Columns::fit(area.width.saturating_sub(1), current);
+        let columns = Columns::fit(row_width(area), current);
         let rows = self.rows[visible]
             .iter()
             .map(|&child| row(&current.children[child], current.size, &columns));
@@ -564,17 +562,7 @@ pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64
         items,
         usize::from(width.saturating_sub(6)),
     );
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(Line::from(vec![
-            Span::raw("─"),
-            Span::styled(
-                " Move to the Trash? ",
-                Style::new().fg(WARN).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .border_style(Style::new().fg(WARN))
-        .padding(Padding::horizontal(1));
+    let block = theme::alert("Move to the Trash?").padding(Padding::horizontal(1));
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
@@ -648,6 +636,11 @@ impl Columns {
             Constraint::Length(self.items),
         ]
     }
+}
+
+/// What a `list` in `area` leaves for its columns once the marker has its own.
+pub(crate) fn row_width(area: Rect) -> u16 {
+    area.width.saturating_sub(width(theme::MARKER))
 }
 
 /// A table whose selected row keeps its colors and gets a marker in the left margin.
@@ -854,9 +847,10 @@ pub(crate) fn header(frame: &mut Frame, area: Rect, crumbs: &[String], summary: 
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(width(&summary))]).areas(area);
     let mut spans = vec![Span::styled(" ruim ", BADGE), Span::raw("  ")];
+    // The badge takes 8 columns; 3 more keep the crumbs off the summary.
     spans.extend(crumb_spans(
         crumbs,
-        usize::from(left.width).saturating_sub(11),
+        usize::from(left.width).saturating_sub(8 + 3),
     ));
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
     frame.render_widget(Paragraph::new(summary).right_aligned(), right);

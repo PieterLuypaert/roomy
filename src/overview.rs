@@ -540,9 +540,7 @@ impl App {
             })
             .max()
             .unwrap_or(0);
-        let about = area
-            .width
-            .saturating_sub(1 + 9 + 4 + 1 + name_width + 13 + 5);
+        let about = ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + 13 + 5);
         let rows: Vec<Row> = self.slices[visible]
             .iter()
             .map(|slice| self.slice_row(slice, usize::from(about)))
@@ -632,7 +630,7 @@ impl App {
             .iter()
             .map(|&i| ui::width(self.summary.places[i].label))
             .max();
-        let columns = PlaceColumns::fit(area.width.saturating_sub(1), label.unwrap_or(0));
+        let columns = PlaceColumns::fit(ui::row_width(area), label.unwrap_or(0));
         let rows: Vec<Row> = self.shown[visible]
             .iter()
             .map(|&index| place_row(&self.summary.places[index], total, &columns))
