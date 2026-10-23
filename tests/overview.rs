@@ -4,12 +4,12 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use ruim::categories::{Group, summarize};
-use ruim::overview::{App, Part, apportion, overcount, scale, slices};
-use ruim::print;
-use ruim::tree::{Kind, Node};
-use ruim::ui::Outcome;
-use ruim::volumes::Disk;
+use roomy::categories::{Group, summarize};
+use roomy::overview::{App, Part, apportion, overcount, scale, slices};
+use roomy::print;
+use roomy::tree::{Kind, Node};
+use roomy::ui::Outcome;
+use roomy::volumes::Disk;
 
 fn disk(data: u64) -> Disk {
     Disk {
@@ -118,7 +118,7 @@ fn the_overview_lists_groups_and_disk_parts() {
     assert!(text.contains("Test HD"));
     assert!(text.contains("Apps"));
     assert!(text.contains("Project dependencies & builds"));
-    assert!(text.contains("Hidden from ruim"));
+    assert!(text.contains("Hidden from roomy"));
     press(&mut app, KeyCode::End);
     assert!(screen(&mut app).contains("2.0 kB more can be freed"));
 }
@@ -162,7 +162,7 @@ fn b_browses_the_whole_disk_and_back_returns_to_the_overview() {
 
     press(&mut app, KeyCode::Char('b'));
     assert_eq!(app.browser().unwrap().path(), PathBuf::from("/"));
-    assert!(screen(&mut app).contains("ruim   Test HD "));
+    assert!(screen(&mut app).contains("roomy   Test HD "));
     press(&mut app, KeyCode::Enter);
     assert!(screen(&mut app).contains("Test HD › Applications"));
     press(&mut app, KeyCode::Left);
@@ -198,7 +198,7 @@ fn the_text_summary_lists_parts_and_top_places() {
         out.contains("/Users/ann/Documents/app/node_modules  (node_modules)"),
         "{out}"
     );
-    assert!(out.contains("   7.0 kB   7%  Hidden from ruim\n"), "{out}");
+    assert!(out.contains("   7.0 kB   7%  Hidden from roomy\n"), "{out}");
 }
 
 #[test]
@@ -237,7 +237,10 @@ fn trashing_a_place_moves_its_bytes_to_the_trash_group() {
     press(&mut app, KeyCode::Esc);
     let text = screen(&mut app);
     assert!(text.contains("Trash"), "{text}");
-    assert!(text.contains("   7.0 kB   7% ■ Hidden from ruim"), "{text}");
+    assert!(
+        text.contains("   7.0 kB   7% ■ Hidden from roomy"),
+        "{text}"
+    );
 }
 
 #[test]

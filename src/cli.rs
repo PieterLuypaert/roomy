@@ -2,10 +2,10 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-Usage: ruim [PATH] [options]
+Usage: roomy [PATH] [options]
 
-See where disk space goes. Plain ruim shows where the whole disk's space
-goes; ruim PATH opens a browser of that folder. In a pipe it prints instead.
+See where disk space goes. Plain roomy shows where the whole disk's space
+goes; roomy PATH opens a browser of that folder. In a pipe it prints instead.
 
 Options:
   -p, --print      print instead of opening the full-screen view

@@ -3,12 +3,12 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::{env, fs};
 
-use ruim::categories::Summary;
-use ruim::cli::{self, Args, Command, Output};
-use ruim::scan::{self, Progress};
-use ruim::tree::Node;
-use ruim::volumes::{self, Disk};
-use ruim::{format, overview, print, ui};
+use roomy::categories::Summary;
+use roomy::cli::{self, Args, Command, Output};
+use roomy::scan::{self, Progress};
+use roomy::tree::Node;
+use roomy::volumes::{self, Disk};
+use roomy::{format, overview, print, ui};
 
 fn main() -> ExitCode {
     match cli::parse(env::args_os().skip(1)) {
@@ -17,18 +17,18 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Version) => {
-            println!("ruim {}", env!("CARGO_PKG_VERSION"));
+            println!("roomy {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Ok(Command::Run(args)) => match run(args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(problem) => {
-                eprintln!("ruim: {problem}");
+                eprintln!("roomy: {problem}");
                 ExitCode::FAILURE
             }
         },
         Err(problem) => {
-            eprintln!("ruim: {problem}\nTry 'ruim --help'.");
+            eprintln!("roomy: {problem}\nTry 'roomy --help'.");
             ExitCode::from(2)
         }
     }
@@ -93,14 +93,14 @@ fn warn_skipped(root: &Node) {
     if denied > 0 {
         let count = format::count(denied);
         eprintln!(
-            "ruim: {count} entries could not be opened. {}",
+            "roomy: {count} entries could not be opened. {}",
             format::ACCESS_HINT
         );
     }
     let unreadable = root.count_where(|node| node.is_unreadable);
     if unreadable > 0 {
         eprintln!(
-            "ruim: {} entries could not be read",
+            "roomy: {} entries could not be read",
             format::count(unreadable)
         );
     }

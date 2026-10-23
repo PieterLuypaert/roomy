@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use ruim::categories::{Group, Summary, summarize};
-use ruim::tree::{Kind, Node};
+use roomy::categories::{Group, Summary, summarize};
+use roomy::tree::{Kind, Node};
 
 fn file(name: &str, size: u64) -> Node {
     Node::leaf(name, Kind::File, size)

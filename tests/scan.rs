@@ -2,14 +2,14 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use ruim::scan::{Progress, scan};
-use ruim::tree::{Kind, Node};
+use roomy::scan::{Progress, scan};
+use roomy::tree::{Kind, Node};
 
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("ruim-test-{}-{name}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("roomy-test-{}-{name}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         Scratch(fs::canonicalize(&path).unwrap())
     }

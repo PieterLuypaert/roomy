@@ -6,8 +6,8 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use ruim::tree::{Kind, Node};
-use ruim::ui::{Browser, Outcome};
+use roomy::tree::{Kind, Node};
+use roomy::ui::{Browser, Outcome};
 
 fn sample() -> Browser {
     let mut locked = Node::dir("locked", 0);

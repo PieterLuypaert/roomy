@@ -559,14 +559,16 @@ pub(crate) fn trash_refusal(node: &Node, path: &Path) -> Option<String> {
     let name = node.label();
     if actions::is_protected(path, &volumes::home()) {
         Some(format!(
-            "ruim will not move {name}: your home folder lives there."
+            "roomy will not move {name}: your home folder lives there."
         ))
     } else if node.is_denied {
         Some(format!(
-            "ruim cannot see inside {name}, so it leaves it alone."
+            "roomy cannot see inside {name}, so it leaves it alone."
         ))
     } else if node.is_mount {
-        Some(format!("{name} is another disk; ruim does not move disks."))
+        Some(format!(
+            "{name} is another disk; roomy does not move disks."
+        ))
     } else {
         None
     }
@@ -635,7 +637,7 @@ fn refusal(node: &Node) -> Option<String> {
         Some(format!("{name} could not be read."))
     } else if node.is_mount {
         Some(format!(
-            "{name} is another disk. Run ruim on it to look inside."
+            "{name} is another disk. Run roomy on it to look inside."
         ))
     } else {
         None
@@ -881,12 +883,11 @@ pub(crate) fn header(frame: &mut Frame, area: Rect, crumbs: &[String], summary: 
     let summary = format!("{summary} ");
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(width(&summary))]).areas(area);
-    let mut spans = vec![Span::styled(" ruim ", BADGE), Span::raw("  ")];
-    // The badge takes 8 columns; 3 more keep the crumbs off the summary.
-    spans.extend(crumb_spans(
-        crumbs,
-        usize::from(left.width).saturating_sub(8 + 3),
-    ));
+    let badge = " roomy ";
+    let mut spans = vec![Span::styled(badge, BADGE), Span::raw("  ")];
+    // The badge and its gap come first; 3 more columns keep the crumbs off the summary.
+    let room = left.width.saturating_sub(width(badge) + 2 + 3);
+    spans.extend(crumb_spans(crumbs, usize::from(room)));
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
     frame.render_widget(Paragraph::new(summary).right_aligned(), right);
 }
@@ -1169,7 +1170,7 @@ pub(crate) fn stop() {
     let released = mouse(MOUSE_OFF);
     ratatui::restore();
     if let Err(err) = released {
-        eprintln!("ruim: could not release the mouse: {err}");
+        eprintln!("roomy: could not release the mouse: {err}");
     }
 }
 

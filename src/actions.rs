@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_home_reached_through_a_symlink_is_protected() {
-        let base = std::env::temp_dir().join(format!("ruim-home-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("roomy-home-{}", std::process::id()));
         let real = base.join("real");
         fs::create_dir_all(real.join("work")).unwrap();
         std::os::unix::fs::symlink(&real, base.join("link")).unwrap();
