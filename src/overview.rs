@@ -17,7 +17,7 @@ use crate::format;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, DIM, TRACK, WARN};
 use crate::tree::Node;
-use crate::ui::{self, Browser, Cursor, Outcome, Pointer};
+use crate::ui::{self, Browser, Cursor, Outcome, Pointer, Toast};
 use crate::volumes::{self, Disk};
 
 const PALETTE: [Color; 7] = [
@@ -219,7 +219,7 @@ pub struct App {
     group: Option<Group>,
     screen: Screen,
     came_from: Screen,
-    status: Option<String>,
+    toast: Option<Toast>,
     moved: u64,
     pending: Option<usize>,
 }
@@ -241,7 +241,7 @@ impl App {
             group: None,
             screen: Screen::Overview,
             came_from: Screen::Overview,
-            status: None,
+            toast: None,
             moved: 0,
             pending: None,
         }
@@ -261,7 +261,7 @@ impl App {
     }
 
     pub fn status(&self) -> Option<&str> {
-        self.status.as_deref()
+        self.toast.as_ref().map(Toast::text)
     }
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
@@ -272,7 +272,7 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(*key),
             Event::Mouse(mouse) if self.pending.is_none() => {
                 if ui::is_click(mouse) {
-                    self.status = None;
+                    self.toast = None;
                 }
                 self.on_pointer(*mouse);
                 Outcome::Continue
@@ -296,7 +296,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Outcome {
-        self.status = None;
+        self.toast = None;
         if let Some(index) = self.pending.take() {
             if ui::is_yes(key.code) {
                 self.confirm_place(index);
@@ -348,9 +348,9 @@ impl App {
         let Some(index) = self.selected_place() else {
             return;
         };
-        self.status = Some(match action(&self.summary.places[index].path) {
-            Ok(()) => done.to_string(),
-            Err(err) => format!("That did not work: {err}"),
+        self.toast = Some(match action(&self.summary.places[index].path) {
+            Ok(()) => Toast::done(done),
+            Err(err) => Toast::problem(format!("That did not work: {err}")),
         });
     }
 
@@ -369,7 +369,7 @@ impl App {
             ui::trash_refusal(node, &place.path)
         };
         match refusal {
-            Some(reason) => self.status = Some(reason),
+            Some(reason) => self.toast = Some(Toast::problem(reason)),
             None => self.pending = Some(index),
         }
     }
@@ -378,13 +378,13 @@ impl App {
         let place = &self.summary.places[index];
         let (trail, path) = (place.trail.clone(), place.path.clone());
         let name = name_of(&path);
-        self.status = Some(match self.browser.trash(&trail, &path) {
+        self.toast = Some(match self.browser.trash(&trail, &path) {
             Ok(size) => {
                 self.moved += size;
                 self.refresh();
-                ui::trashed_message(&name, size)
+                Toast::done(ui::trashed_message(&name, size))
             }
-            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+            Err(err) => Toast::problem(format!("Could not move {name} to the Trash: {err}")),
         });
     }
 
@@ -424,9 +424,9 @@ impl App {
                 self.places.reset(0);
                 self.screen = Screen::Places;
             }
-            Part::Hidden => self.status = Some(hidden_reason(&self.disk)),
+            Part::Hidden => self.toast = Some(Toast::info(hidden_reason(&self.disk))),
             Part::System | Part::Reserved => {
-                self.status = Some("The system manages this space itself.".to_string());
+                self.toast = Some(Toast::info("The system manages this space itself."));
             }
             Part::Free => {}
         }
@@ -492,7 +492,10 @@ impl App {
         let pointer = pointer.inner(Margin::new(1, 0));
         frame.render_widget(Paragraph::new(self.pointer(&parts, pointer.width)), pointer);
         self.render_slices(frame, list);
-        ui::footer(frame, bottom, &OVERVIEW_KEYS, self.status.as_deref());
+        ui::footer(frame, bottom, &OVERVIEW_KEYS);
+        if let Some(toast) = &self.toast {
+            ui::show_toast(frame, body, toast);
+        }
     }
 
     /// Underlines the selected part of the disk bar.
@@ -608,7 +611,10 @@ impl App {
         }
         let list = ui::framed(frame, body, block);
         self.render_place_rows(frame, list, total);
-        ui::footer(frame, bottom, &PLACE_KEYS, self.status.as_deref());
+        ui::footer(frame, bottom, &PLACE_KEYS);
+        if let Some(toast) = &self.toast {
+            ui::show_toast(frame, body, toast);
+        }
         if let Some(index) = self.pending {
             let place = &self.summary.places[index];
             let node = self.browser.root().descend(&place.trail);

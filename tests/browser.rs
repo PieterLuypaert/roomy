@@ -95,11 +95,10 @@ fn explains_why_a_locked_folder_does_not_open() {
 
     assert_eq!(browser.path(), PathBuf::from("/data"));
     assert!(browser.status().unwrap().contains("No access to locked"));
-    let footer = screen(&mut browser).pop().unwrap();
-    assert!(
-        footer.contains("No access to locked") && !footer.contains("quit"),
-        "{footer}"
-    );
+    let mut lines = screen(&mut browser);
+    let footer = lines.pop().unwrap();
+    assert!(lines.join("\n").contains("No access to locked"));
+    assert!(footer.contains("quit"), "{footer}");
 }
 
 #[test]
@@ -323,6 +322,7 @@ fn a_folder_emptied_by_moves_says_so() {
     press(&mut browser, KeyCode::Enter);
     press(&mut browser, KeyCode::Char('d'));
     press(&mut browser, KeyCode::Char('y'));
+    press(&mut browser, KeyCode::Down);
 
     assert!(screen(&mut browser).join("\n").contains("Empty folder"));
 }

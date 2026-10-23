@@ -20,7 +20,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::actions::{self, Trasher};
 use crate::format;
 use crate::scan::{self, Progress};
-use crate::theme::{self, ACCENT, BADGE, DIM, SELECTION, TRACK, WARN};
+use crate::theme::{self, ACCENT, BADGE, DIM, DONE, SELECTION, TRACK, WARN};
 use crate::tree::{Kind, Node};
 use crate::volumes;
 
@@ -47,6 +47,47 @@ pub enum Outcome {
     Continue,
     Quit,
     Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Done,
+    Info,
+    Problem,
+}
+
+/// A message that floats over the bottom of the panel until the next key or click.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Toast {
+    text: String,
+    tone: Tone,
+}
+
+impl Toast {
+    pub(crate) fn done(text: impl Into<String>) -> Self {
+        Toast {
+            text: text.into(),
+            tone: Tone::Done,
+        }
+    }
+
+    pub(crate) fn info(text: impl Into<String>) -> Self {
+        Toast {
+            text: text.into(),
+            tone: Tone::Info,
+        }
+    }
+
+    pub(crate) fn problem(text: impl Into<String>) -> Self {
+        Toast {
+            text: text.into(),
+            tone: Tone::Problem,
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +221,7 @@ pub struct Browser {
     sort: Sort,
     denied: u64,
     unreadable: u64,
-    status: Option<String>,
+    toast: Option<Toast>,
     pending: Option<usize>,
     trasher: Trasher,
     trashed: u64,
@@ -200,7 +241,7 @@ impl Browser {
             sort: Sort::Size,
             denied,
             unreadable,
-            status: None,
+            toast: None,
             pending: None,
             trasher: actions::trash,
             trashed: 0,
@@ -262,7 +303,7 @@ impl Browser {
     }
 
     pub fn status(&self) -> Option<&str> {
-        self.status.as_deref()
+        self.toast.as_ref().map(Toast::text)
     }
 
     /// Shows the folder at `trail`, or the folder holding it when it is a file or does not
@@ -272,7 +313,11 @@ impl Browser {
         let reason = refusal(target);
         let opens = trail.is_empty() || (target.is_dir() && reason.is_none());
         let focus = if opens { None } else { trail.pop() };
-        self.status = if opens { None } else { reason };
+        self.toast = if opens {
+            None
+        } else {
+            reason.map(Toast::problem)
+        };
         self.floor = trail.len();
         self.trail = trail;
         self.show(focus);
@@ -281,13 +326,13 @@ impl Browser {
     pub fn handle(&mut self, event: &Event) -> Outcome {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                self.status = None;
+                self.toast = None;
                 self.on_key(*key)
             }
             Event::Mouse(_) if self.pending.is_some() => Outcome::Continue,
             Event::Mouse(mouse) => {
                 if is_click(mouse) {
-                    self.status = None;
+                    self.toast = None;
                 }
                 match self.cursor.mouse(*mouse, self.rows.len()) {
                     Pointer::Activate => {
@@ -308,7 +353,7 @@ impl Browser {
         };
         let node = &self.current().children[child];
         if let Some(reason) = refusal(node) {
-            self.status = Some(reason);
+            self.toast = Some(Toast::problem(reason));
         } else if node.is_dir() {
             self.trail.push(child);
             self.show(None);
@@ -377,9 +422,9 @@ impl Browser {
         let Some(path) = self.selected_path() else {
             return;
         };
-        self.status = Some(match action(&path) {
-            Ok(()) => done.to_string(),
-            Err(err) => format!("That did not work: {err}"),
+        self.toast = Some(match action(&path) {
+            Ok(()) => Toast::done(done),
+            Err(err) => Toast::problem(format!("That did not work: {err}")),
         });
     }
 
@@ -389,7 +434,7 @@ impl Browser {
         };
         let path = self.path().join(&*self.current().children[child].name);
         match trash_refusal(&self.current().children[child], &path) {
-            Some(reason) => self.status = Some(reason),
+            Some(reason) => self.toast = Some(Toast::problem(reason)),
             None => self.pending = Some(child),
         }
     }
@@ -400,12 +445,12 @@ impl Browser {
         let node = self.root.descend(&trail);
         let (name, size) = (node.label().into_owned(), node.size);
         let path = self.path().join(&*node.name);
-        self.status = Some(match self.trash(&trail, &path) {
+        self.toast = Some(match self.trash(&trail, &path) {
             Ok(_) => {
                 self.trashed += size;
-                trashed_message(&name, size)
+                Toast::done(trashed_message(&name, size))
             }
-            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+            Err(err) => Toast::problem(format!("Could not move {name} to the Trash: {err}")),
         });
     }
 
@@ -424,7 +469,10 @@ impl Browser {
             .title_bottom(theme::aside(&self.trouble()));
         let list = framed(frame, body, block);
         self.render_rows(frame, list);
-        footer(frame, bottom, &KEYS, self.status.as_deref());
+        footer(frame, bottom, &KEYS);
+        if let Some(toast) = &self.toast {
+            show_toast(frame, body, toast);
+        }
         if let Some(child) = self.pending {
             let node = &self.current().children[child];
             let path = format::path(&self.path().join(&*node.name));
@@ -731,6 +779,26 @@ pub(crate) fn fit_end(text: &str, room: usize) -> String {
     format!("{}…", head.trim_end_matches([' ', ',', ':', ';']))
 }
 
+/// Splits text into lines of at most `room` characters, breaking between words.
+fn wrap(text: &str, room: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let needed = line.chars().count() + 1 + word.chars().count();
+        if !line.is_empty() && needed > room {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// The header row, the panel between and the key row.
 pub(crate) fn screen(area: Rect) -> [Rect; 3] {
     Layout::vertical([
@@ -816,13 +884,8 @@ fn crumbs_width(crumbs: &[String], shown: usize) -> usize {
     names + separator * (shown - 1) + hidden
 }
 
-/// Key hints as keycaps: as many as fit, and always the last one. A status takes their place.
-pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)], status: Option<&str>) {
-    if let Some(status) = status {
-        let line = Span::styled(format!(" {status}"), Style::new().fg(WARN));
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
+/// Key hints as keycaps: as many as fit, and always the last one.
+pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
     let Some((last, rest)) = keys.split_last() else {
         return;
     };
@@ -845,6 +908,38 @@ fn key_hint((key, action): &(&str, &str)) -> [Span<'static>; 2] {
         theme::keycap(key),
         Span::styled(format!(" {action}  "), Style::new().fg(DIM)),
     ]
+}
+
+/// Floats the toast over the bottom right inside the panel at `area`.
+pub(crate) fn show_toast(frame: &mut Frame, area: Rect, toast: &Toast) {
+    let (glyph, color) = match toast.tone {
+        Tone::Done => ("✓", DONE),
+        Tone::Info => ("•", ACCENT),
+        Tone::Problem => ("!", WARN),
+    };
+    let room = usize::from(area.width.saturating_sub(12)).clamp(1, 56);
+    let lines = wrap(&toast.text, room);
+    let longest = lines.iter().map(|line| width(line)).max().unwrap_or(0);
+    let (popup_width, height) = (longest + 6, lines.len() as u16 + 2);
+    let popup = Rect {
+        x: area.right().saturating_sub(popup_width + 2),
+        y: area.bottom().saturating_sub(height + 1),
+        width: popup_width,
+        height,
+    }
+    .intersection(area);
+    let lead = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    let marks = std::iter::once(format!("{glyph} ")).chain(std::iter::repeat(String::from("  ")));
+    let text: Vec<Line> = marks
+        .zip(lines)
+        .map(|(mark, line)| Line::from(vec![Span::styled(mark, lead), Span::raw(line)]))
+        .collect();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(color))
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
 pub fn run(path: PathBuf) -> io::Result<()> {
@@ -1030,6 +1125,14 @@ mod tests {
     fn fit_end_keeps_the_start() {
         assert_eq!(fit_end("short", 10), "short");
         assert_eq!(fit_end("what apps keep in ~/Library", 12), "what apps…");
+    }
+
+    #[test]
+    fn wrap_breaks_between_words() {
+        assert_eq!(
+            wrap("No access to locked. Give your terminal access.", 20),
+            ["No access to locked.", "Give your terminal", "access."]
+        );
     }
 
     #[test]

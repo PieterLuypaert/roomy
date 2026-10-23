@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, BorderType};
 pub(crate) const ACCENT: Color = Color::Indexed(75);
 pub(crate) const DIM: Color = Color::Indexed(244);
 pub(crate) const WARN: Color = Color::Indexed(203);
+pub(crate) const DONE: Color = Color::Indexed(114);
 pub(crate) const TRACK: Color = Color::Indexed(240);
 pub(crate) const BORDER: Color = Color::Indexed(238);
 pub(crate) const SELECTION: Style = Style::new()
