@@ -928,17 +928,19 @@ pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
         if used > area.width {
             break;
         }
-        spans.extend(key_hint(hint));
+        spans.extend(key_hint(hint, "  "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    let last = Line::from(Vec::from(key_hint(last))).right_aligned();
-    frame.render_widget(Paragraph::new(last), area);
+    if area.width >= cost(last) {
+        let last = Line::from(Vec::from(key_hint(last, " "))).right_aligned();
+        frame.render_widget(Paragraph::new(last), area);
+    }
 }
 
-fn key_hint((key, action): &(&str, &str)) -> [Span<'static>; 2] {
+fn key_hint((key, action): &(&str, &str), gap: &str) -> [Span<'static>; 2] {
     [
         theme::keycap(key),
-        Span::styled(format!(" {action}  "), Style::new().fg(DIM)),
+        Span::styled(format!(" {action}{gap}"), Style::new().fg(DIM)),
     ]
 }
 
