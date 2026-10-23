@@ -5,6 +5,7 @@ pub mod format;
 pub mod overview;
 pub mod print;
 pub mod scan;
+mod theme;
 pub mod tree;
 pub mod ui;
 pub mod volumes;

@@ -10,14 +10,17 @@ use ratatui::crossterm::event::{
     MouseEventKind,
 };
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{
+    Block, BorderType, Cell, Clear, HighlightSpacing, Padding, Paragraph, Row, Table, TableState,
+};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::actions::{self, Trasher};
 use crate::format;
 use crate::scan::{self, Progress};
+use crate::theme::{self, ACCENT, BADGE, DIM, DONE, SELECTION, TRACK, WARN};
 use crate::tree::{Kind, Node};
 use crate::volumes;
 
@@ -27,24 +30,63 @@ const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-pub(crate) const ACCENT: Color = Color::Indexed(75);
-pub(crate) const DIM: Color = Color::Indexed(244);
-pub(crate) const WARN: Color = Color::Indexed(203);
-pub(crate) const TRACK: Color = Color::Indexed(240);
-pub(crate) const SELECTION: Style = Style::new()
-    .fg(Color::Indexed(255))
-    .bg(Color::Indexed(237))
-    .add_modifier(Modifier::BOLD);
-const BADGE: Style = Style::new()
-    .fg(Color::Black)
-    .bg(ACCENT)
-    .add_modifier(Modifier::BOLD);
+const SEPARATOR: &str = " › ";
+pub(crate) const STOP_KEYS: [(&str, &str); 1] = [("q", "stop")];
+const KEYS: [(&str, &str); 8] = [
+    ("↑↓", "move"),
+    ("→", "open"),
+    ("←", "back"),
+    ("s", "sort"),
+    ("o", "finder"),
+    ("y", "copy path"),
+    ("d", "trash"),
+    ("q", "quit"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
     Quit,
     Leave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Done,
+    Info,
+    Problem,
+}
+
+/// A message that floats over the bottom of the panel until the next key or click.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Toast {
+    text: String,
+    tone: Tone,
+}
+
+impl Toast {
+    fn new(text: impl Into<String>, tone: Tone) -> Self {
+        Toast {
+            text: text.into(),
+            tone,
+        }
+    }
+
+    pub(crate) fn done(text: impl Into<String>) -> Self {
+        Toast::new(text, Tone::Done)
+    }
+
+    pub(crate) fn info(text: impl Into<String>) -> Self {
+        Toast::new(text, Tone::Info)
+    }
+
+    pub(crate) fn problem(text: impl Into<String>) -> Self {
+        Toast::new(text, Tone::Problem)
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,10 +220,12 @@ pub struct Browser {
     sort: Sort,
     denied: u64,
     unreadable: u64,
-    status: Option<String>,
+    toast: Option<Toast>,
     pending: Option<usize>,
     trasher: Trasher,
     trashed: u64,
+    /// Crumbs for what lies above the floor, when the overview opened the browser.
+    origin: Option<Vec<String>>,
 }
 
 impl Browser {
@@ -198,10 +242,11 @@ impl Browser {
             sort: Sort::Size,
             denied,
             unreadable,
-            status: None,
+            toast: None,
             pending: None,
             trasher: actions::trash,
             trashed: 0,
+            origin: None,
         };
         browser.show(None);
         browser
@@ -260,17 +305,36 @@ impl Browser {
     }
 
     pub fn status(&self) -> Option<&str> {
-        self.status.as_deref()
+        self.toast.as_ref().map(Toast::text)
+    }
+
+    fn crumbs(&self) -> Vec<String> {
+        let Some(origin) = &self.origin else {
+            return path_crumbs(&format::path(&self.path()));
+        };
+        let start = self.floor.saturating_sub(1);
+        let mut node = self.root.descend(&self.trail[..start]);
+        let mut crumbs = origin.clone();
+        for &child in &self.trail[start..] {
+            node = &node.children[child];
+            crumbs.push(node.label().into_owned());
+        }
+        crumbs
     }
 
     /// Shows the folder at `trail`, or the folder holding it when it is a file or does not
-    /// open; back stops there.
-    pub fn jump(&mut self, mut trail: Vec<usize>) {
+    /// open; back stops there. An `origin` heads the breadcrumbs in place of the path above.
+    pub fn jump(&mut self, mut trail: Vec<usize>, origin: Option<Vec<String>>) {
+        self.origin = origin;
         let target = self.root.descend(&trail);
         let reason = refusal(target);
         let opens = trail.is_empty() || (target.is_dir() && reason.is_none());
         let focus = if opens { None } else { trail.pop() };
-        self.status = if opens { None } else { reason };
+        self.toast = if opens {
+            None
+        } else {
+            reason.map(Toast::problem)
+        };
         self.floor = trail.len();
         self.trail = trail;
         self.show(focus);
@@ -279,13 +343,13 @@ impl Browser {
     pub fn handle(&mut self, event: &Event) -> Outcome {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                self.status = None;
+                self.toast = None;
                 self.on_key(*key)
             }
             Event::Mouse(_) if self.pending.is_some() => Outcome::Continue,
             Event::Mouse(mouse) => {
                 if is_click(mouse) {
-                    self.status = None;
+                    self.toast = None;
                 }
                 match self.cursor.mouse(*mouse, self.rows.len()) {
                     Pointer::Activate => {
@@ -306,7 +370,7 @@ impl Browser {
         };
         let node = &self.current().children[child];
         if let Some(reason) = refusal(node) {
-            self.status = Some(reason);
+            self.toast = Some(Toast::problem(reason));
         } else if node.is_dir() {
             self.trail.push(child);
             self.show(None);
@@ -375,9 +439,9 @@ impl Browser {
         let Some(path) = self.selected_path() else {
             return;
         };
-        self.status = Some(match action(&path) {
-            Ok(()) => done.to_string(),
-            Err(err) => format!("That did not work: {err}"),
+        self.toast = Some(match action(&path) {
+            Ok(()) => Toast::done(done),
+            Err(err) => Toast::problem(format!("That did not work: {err}")),
         });
     }
 
@@ -387,7 +451,7 @@ impl Browser {
         };
         let path = self.path().join(&*self.current().children[child].name);
         match trash_refusal(&self.current().children[child], &path) {
-            Some(reason) => self.status = Some(reason),
+            Some(reason) => self.toast = Some(Toast::problem(reason)),
             None => self.pending = Some(child),
         }
     }
@@ -398,47 +462,49 @@ impl Browser {
         let node = self.root.descend(&trail);
         let (name, size) = (node.label().into_owned(), node.size);
         let path = self.path().join(&*node.name);
-        self.status = Some(match self.trash(&trail, &path) {
+        self.toast = Some(match self.trash(&trail, &path) {
             Ok(_) => {
                 self.trashed += size;
-                trashed_message(&name, size)
+                Toast::done(trashed_message(&name, size))
             }
-            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+            Err(err) => Toast::problem(format!("Could not move {name} to the Trash: {err}")),
         });
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
-        let [top, list, bottom] = screen(frame.area());
-        let current = self.current();
-        let total = format!(
-            "{} · {}",
-            format::size(current.size),
-            format::items(current.items)
-        );
-        header(frame, top, &format::path(&self.path()), &total);
+        let [top, body, bottom] = screen(frame.area());
+        let crumbs = self.crumbs();
+        header(frame, top, &crumbs, &format::size(self.current().size));
+        let count = self.count();
+        let room = usize::from(body.width.saturating_sub(width(&count) + 10));
+        let name = fit_end(crumbs.last().map_or("", String::as_str), room);
+        let trouble = self.trouble();
+        let mut block = theme::counted(&name, &count).title_bottom(theme::aside(&trouble));
+        if self.origin.is_some() {
+            let room = usize::from(body.width.saturating_sub(width(&trouble) + 10));
+            let path = fit_start(&format::path(&self.path()), room);
+            block = block.title_bottom(theme::note(&path));
+        }
+        let inner = framed(frame, body, block);
+        let [list, strip] = make_room(inner, self.toast.as_ref());
         self.render_rows(frame, list);
-        let sort = format!("sort: {}", self.sort.label());
-        let keys = [
-            ("↑↓", "move"),
-            ("→", "open"),
-            ("←", "back"),
-            ("s", sort.as_str()),
-            ("o", "finder"),
-            ("y", "copy path"),
-            ("d", "trash"),
-            ("q", "quit"),
-        ];
-        footer(
-            frame,
-            bottom,
-            &keys,
-            self.status.as_deref(),
-            &self.trouble(),
-        );
+        footer(frame, bottom, &KEYS);
+        if let Some(toast) = &self.toast {
+            show_toast(frame, strip, toast);
+        }
         if let Some(child) = self.pending {
             let node = &self.current().children[child];
             let path = format::path(&self.path().join(&*node.name));
             confirm_trash(frame, &node.label(), &path, node.size, node.items);
+        }
+    }
+
+    /// How many entries the folder shows, and the order when it is not by size.
+    fn count(&self) -> String {
+        let count = format::items(self.rows.len() as u64);
+        match self.sort {
+            Sort::Size => count,
+            sort => format!("{count} · by {}", sort.label()),
         }
     }
 
@@ -450,17 +516,18 @@ impl Browser {
                 n if n.is_unreadable => "Could not be read",
                 _ => "Empty folder",
             };
-            frame.render_widget(Paragraph::new(note).centered().style(DIM), area);
+            let [middle] = Layout::vertical([Constraint::Length(1)])
+                .flex(Flex::Center)
+                .areas(area);
+            frame.render_widget(Paragraph::new(note).centered().style(DIM), middle);
             return;
         }
         let visible = self.cursor.window(area, self.rows.len());
-        let columns = Columns::fit(area.width, current);
+        let columns = Columns::fit(row_width(area), current);
         let rows = self.rows[visible]
             .iter()
             .map(|&child| row(&current.children[child], current.size, &columns));
-        let table = Table::new(rows, columns.widths())
-            .column_spacing(1)
-            .row_highlight_style(SELECTION);
+        let table = list(rows, columns.widths());
         frame.render_stateful_widget(table, area, &mut self.cursor.state());
     }
 
@@ -520,18 +587,16 @@ pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64
         items,
         usize::from(width.saturating_sub(6)),
     );
-    let block = Block::bordered()
-        .title(" Move to the Trash? ")
-        .border_style(Style::new().fg(WARN))
-        .padding(Padding::horizontal(1));
+    let block = theme::alert("Move to the Trash?").padding(Padding::horizontal(1));
     frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 fn popup_lines(name: &str, path: &str, size: u64, items: u64, room: usize) -> Vec<Line<'static>> {
-    let mut amount = format::size(size);
+    let mut amount = vec![Span::styled(format::size(size), theme::size(size))];
     if items > 0 {
-        amount = format!("{amount} · {}", format::items(items));
+        let items = format!(" · {}", format::items(items));
+        amount.push(Span::styled(items, Style::new().fg(DIM)));
     }
     vec![
         Line::styled(
@@ -539,13 +604,13 @@ fn popup_lines(name: &str, path: &str, size: u64, items: u64, room: usize) -> Ve
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Line::styled(fit_start(path, room), Style::new().fg(DIM)),
-        Line::raw(amount),
+        Line::from(amount),
         Line::raw(""),
         Line::from(vec![
-            Span::styled(" y ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled("move to Trash   ", Style::new().fg(DIM)),
-            Span::styled(" any other key ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled("keep it", Style::new().fg(DIM)),
+            theme::keycap("y"),
+            Span::styled(" move to Trash  ", Style::new().fg(DIM)),
+            theme::keycap("any other key"),
+            Span::styled(" keep it", Style::new().fg(DIM)),
         ]),
     ]
 }
@@ -598,6 +663,26 @@ impl Columns {
     }
 }
 
+/// What a `list` in `area` leaves for its columns once the marker has its own.
+pub(crate) fn row_width(area: Rect) -> u16 {
+    area.width.saturating_sub(width(theme::MARKER))
+}
+
+/// A table whose selected row keeps its colors and gets a marker in the left margin.
+pub(crate) fn list<'a, R, C>(rows: R, widths: C) -> Table<'a>
+where
+    R: IntoIterator,
+    R::Item: Into<Row<'a>>,
+    C: IntoIterator,
+    C::Item: Into<Constraint>,
+{
+    Table::new(rows, widths)
+        .column_spacing(1)
+        .row_highlight_style(SELECTION)
+        .highlight_symbol(theme::marker())
+        .highlight_spacing(HighlightSpacing::Always)
+}
+
 pub(crate) fn bar_width(width: u16) -> u16 {
     match width {
         w if w >= 110 => 30,
@@ -616,7 +701,7 @@ fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
     };
     let dim = Style::new().fg(DIM);
     Row::new([
-        Cell::from(Line::from(format::size(node.size)).right_aligned()),
+        Cell::from(Line::styled(format::size(node.size), theme::size(node.size)).right_aligned()),
         Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
         Cell::from(bar_line(share, columns.bar)),
         Cell::from(name(node)),
@@ -625,44 +710,44 @@ fn row<'a>(node: &'a Node, parent: u64, columns: &Columns) -> Row<'a> {
 }
 
 pub(crate) fn bar_line(share: f64, width: u16) -> Line<'static> {
-    let filled = bar(share, width);
-    let rest = usize::from(width).saturating_sub(filled.chars().count());
-    Line::from(vec![
-        Span::styled(filled, Style::new().fg(heat(share))),
-        Span::styled("·".repeat(rest), Style::new().fg(TRACK)),
-    ])
+    Line::styled(bar(share, width), Style::new().fg(theme::heat(share)))
 }
 
 fn name(node: &Node) -> Line<'_> {
     let label = node.label();
-    let slash = if node.is_dir() { "/" } else { "" };
+    let (slash, glyph) = if node.is_dir() {
+        ("/", Span::styled("▸ ", Style::new().fg(ACCENT)))
+    } else {
+        ("", Span::raw("  "))
+    };
     let dir = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
     let warn = Style::new().fg(WARN);
     let note = |text: &'static str| Span::styled(text, warn.add_modifier(Modifier::DIM));
-    match node.kind {
-        _ if node.is_denied => Line::from(vec![
+    let rest = match node.kind {
+        _ if node.is_denied => vec![
             Span::styled(format!("{label}{slash}"), warn),
             note("  no access"),
-        ]),
-        _ if node.is_unreadable && node.children.is_empty() => Line::from(vec![
+        ],
+        _ if node.is_unreadable && node.children.is_empty() => vec![
             Span::styled(format!("{label}{slash}"), warn),
             note("  unreadable"),
-        ]),
-        _ if node.is_unreadable => Line::from(vec![
+        ],
+        _ if node.is_unreadable => vec![
             Span::styled(format!("{label}/"), dir),
             note("  partly unreadable"),
-        ]),
-        _ if node.is_mount => Line::from(vec![
+        ],
+        _ if node.is_mount => vec![
             Span::styled(format!("{label}/"), dir),
             Span::styled("  other disk", Style::new().fg(DIM)),
-        ]),
-        Kind::Dir => Line::from(Span::styled(format!("{label}/"), dir)),
-        Kind::Link => Line::from(vec![
-            Span::raw(label),
+        ],
+        Kind::Dir => vec![Span::styled(format!("{label}/"), dir)],
+        Kind::Link => vec![
+            Span::styled(label, theme::file(&node.name)),
             Span::styled(" →", Style::new().fg(DIM)),
-        ]),
-        Kind::File | Kind::Other => Line::from(label),
-    }
+        ],
+        Kind::File | Kind::Other => vec![Span::styled(label, theme::file(&node.name))],
+    };
+    Line::from([vec![glyph], rest].concat())
 }
 
 fn scrolled(offset: usize, cursor: usize, height: usize) -> usize {
@@ -684,15 +769,6 @@ fn bar(share: f64, width: u16) -> String {
     bar
 }
 
-fn heat(share: f64) -> Color {
-    match share {
-        s if s >= 0.5 => Color::Indexed(203),
-        s if s >= 0.2 => Color::Indexed(209),
-        s if s >= 0.05 => Color::Indexed(221),
-        _ => Color::Indexed(110),
-    }
-}
-
 pub(crate) fn width(text: &str) -> u16 {
     u16::try_from(text.chars().count()).unwrap_or(u16::MAX)
 }
@@ -706,59 +782,201 @@ pub(crate) fn fit_start(text: &str, room: usize) -> String {
     format!("…{tail}")
 }
 
+/// Keeps the start of `text`, cut after a whole word when one fits.
+pub(crate) fn fit_end(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_string();
+    }
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(room.saturating_sub(1)).collect();
+    let is_mid_word = chars.next().is_some_and(|next| !next.is_whitespace());
+    let head = match head.rfind(' ') {
+        Some(space) if is_mid_word => &head[..space],
+        _ => &head,
+    };
+    format!("{}…", head.trim_end_matches([' ', ',', ':', ';']))
+}
+
+/// Splits text into lines of at most `room` characters, breaking between words.
+fn wrap(text: &str, room: usize) -> Vec<String> {
+    let room = room.max(1);
+    let words = text.split_whitespace().flat_map(|word| {
+        let chars: Vec<char> = word.chars().collect();
+        let pieces = chars
+            .chunks(room)
+            .map(|piece| piece.iter().collect::<String>());
+        pieces.collect::<Vec<_>>()
+    });
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in words {
+        let needed = line.chars().count() + 1 + word.chars().count();
+        if !line.is_empty() && needed > room {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn toast_lines(toast: &Toast, width: u16) -> Vec<String> {
+    wrap(&toast.text, usize::from(width.saturating_sub(10)).min(56))
+}
+
+/// Splits a strip for the toast off the bottom of `area`, so the toast covers no rows.
+pub(crate) fn make_room(area: Rect, toast: Option<&Toast>) -> [Rect; 2] {
+    let height = toast.map_or(0, |toast| toast_lines(toast, area.width).len() as u16 + 2);
+    Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(area)
+}
+
+/// The header row, the panel between and the key row.
 pub(crate) fn screen(area: Rect) -> [Rect; 3] {
-    let [top, _, list, bottom] = Layout::vertical([
-        Constraint::Length(1),
+    Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
     ])
-    .areas(area);
-    [top, list, bottom]
+    .areas(area)
 }
 
-pub(crate) fn header(frame: &mut Frame, area: Rect, title: &str, summary: &str) {
+/// Draws the block and returns the area inside it.
+pub(crate) fn framed(frame: &mut Frame, area: Rect, block: Block) -> Rect {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    inner
+}
+
+pub(crate) fn path_crumbs(path: &str) -> Vec<String> {
+    let mut crumbs = Vec::new();
+    if path.starts_with('/') {
+        crumbs.push("/".to_string());
+    }
+    let parts = path.split('/').filter(|part| !part.is_empty());
+    crumbs.extend(parts.map(str::to_string));
+    crumbs
+}
+
+pub(crate) fn header(frame: &mut Frame, area: Rect, crumbs: &[String], summary: &str) {
     let summary = format!("{summary} ");
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(width(&summary))]).areas(area);
-    let room = usize::from(left.width).saturating_sub(9);
-    let line = Line::from(vec![
-        Span::styled(" ruim ", BADGE),
-        Span::raw("  "),
-        Span::styled(
-            fit_start(title, room),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), left);
+    let mut spans = vec![Span::styled(" ruim ", BADGE), Span::raw("  ")];
+    // The badge takes 8 columns; 3 more keep the crumbs off the summary.
+    spans.extend(crumb_spans(
+        crumbs,
+        usize::from(left.width).saturating_sub(8 + 3),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), left);
     frame.render_widget(Paragraph::new(summary).right_aligned(), right);
 }
 
-pub(crate) fn footer(
-    frame: &mut Frame,
-    area: Rect,
-    keys: &[(&str, &str)],
-    status: Option<&str>,
-    note: &str,
-) {
-    if let Some(status) = status {
-        let line = Span::styled(format!(" {status}"), Style::new().fg(WARN));
-        frame.render_widget(Paragraph::new(line), area);
-        return;
-    }
+/// Shows as many of the last crumbs as fit, behind a "…" when the first ones do not.
+fn crumb_spans(crumbs: &[String], room: usize) -> Vec<Span<'static>> {
+    let Some(last) = crumbs.last() else {
+        return Vec::new();
+    };
+    let count = crumbs.len();
+    let shown = (1..=count)
+        .rev()
+        .find(|&shown| crumbs_width(crumbs, shown) <= room)
+        .unwrap_or(1);
+    let separator = Span::styled(SEPARATOR, Style::new().fg(TRACK));
     let mut spans = Vec::new();
-    for (key, action) in keys {
-        spans.push(Span::styled(
-            format!(" {key} "),
-            Style::new().add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(format!("{action} "), Style::new().fg(DIM)));
+    if shown < count {
+        spans.extend([Span::styled("…", Style::new().fg(DIM)), separator.clone()]);
+    }
+    for crumb in &crumbs[count - shown..count - 1] {
+        spans.extend([
+            Span::styled(crumb.clone(), Style::new().fg(DIM)),
+            separator.clone(),
+        ]);
+    }
+    let before = crumbs_width(crumbs, shown) - last.chars().count();
+    let last = fit_start(last, room.saturating_sub(before));
+    spans.push(Span::styled(
+        last,
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    spans
+}
+
+/// The width of the last `shown` crumbs, with the "… › " that stands in for the others.
+fn crumbs_width(crumbs: &[String], shown: usize) -> usize {
+    let separator = usize::from(width(SEPARATOR));
+    let names: usize = crumbs[crumbs.len() - shown..]
+        .iter()
+        .map(|crumb| crumb.chars().count())
+        .sum();
+    let hidden = if shown < crumbs.len() {
+        1 + separator
+    } else {
+        0
+    };
+    names + separator * (shown - 1) + hidden
+}
+
+/// Key hints as keycaps: as many as fit, and always the last one, at the right end.
+pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
+    let Some((last, rest)) = keys.split_last() else {
+        return;
+    };
+    let cost = |(key, action): &(&str, &str)| width(key) + width(action) + 5;
+    let mut used = 1 + cost(last);
+    let mut spans = vec![Span::raw(" ")];
+    for hint in rest {
+        used += cost(hint);
+        if used > area.width {
+            break;
+        }
+        spans.extend(key_hint(hint, "  "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    if !note.is_empty() {
-        let right = Span::styled(format!("{note} "), Style::new().fg(DIM));
-        frame.render_widget(Paragraph::new(right).right_aligned(), area);
+    if area.width >= cost(last) {
+        let last = Line::from(Vec::from(key_hint(last, " "))).right_aligned();
+        frame.render_widget(Paragraph::new(last), area);
     }
+}
+
+fn key_hint((key, action): &(&str, &str), gap: &str) -> [Span<'static>; 2] {
+    [
+        theme::keycap(key),
+        Span::styled(format!(" {action}{gap}"), Style::new().fg(DIM)),
+    ]
+}
+
+/// Draws the toast at the right end of the strip `make_room` kept for it.
+pub(crate) fn show_toast(frame: &mut Frame, strip: Rect, toast: &Toast) {
+    let (glyph, color) = match toast.tone {
+        Tone::Done => ("✓", DONE),
+        Tone::Info => ("•", ACCENT),
+        Tone::Problem => ("!", WARN),
+    };
+    let lines = toast_lines(toast, strip.width);
+    let longest = lines.iter().map(|line| width(line)).max().unwrap_or(0);
+    let popup_width = longest + 6;
+    let popup = Rect {
+        x: strip.right().saturating_sub(popup_width + 1),
+        width: popup_width,
+        ..strip
+    }
+    .intersection(strip);
+    let lead = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    let marks = std::iter::once(format!("{glyph} ")).chain(std::iter::repeat(String::from("  ")));
+    let text: Vec<Line> = marks
+        .zip(lines)
+        .map(|(mark, line)| Line::from(vec![Span::styled(mark, lead), Span::raw(line)]))
+        .collect();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(color))
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Paragraph::new(text).block(block), popup);
 }
 
 pub fn run(path: PathBuf) -> io::Result<()> {
@@ -780,8 +998,14 @@ fn session(
     scanner: JoinHandle<io::Result<Node>>,
 ) -> io::Result<()> {
     let label = format::path(&path);
+    let crumbs = path_crumbs(&label);
     let scanned = wait(terminal, progress, scanner, |frame, elapsed| {
-        scanning(frame, frame.area(), &label, progress, elapsed);
+        let [top, body, bottom] = screen(frame.area());
+        header(frame, top, &crumbs, "");
+        scanning(frame, body, &label, progress, elapsed, |width| {
+            Some(sweep(elapsed, width))
+        });
+        footer(frame, bottom, &STOP_KEYS);
     })?;
     let Some(root) = scanned else {
         return Ok(());
@@ -847,49 +1071,68 @@ pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
     is_ctrl_c || key.code == KeyCode::Char('q')
 }
 
+/// A card in the middle of `area` that counts what the scan has seen so far, with the
+/// line `gauge` draws for the room inside the card, if any.
 pub(crate) fn scanning(
     frame: &mut Frame,
     area: Rect,
     label: &str,
     progress: &Progress,
     elapsed: Duration,
+    gauge: impl FnOnce(u16) -> Option<Line<'static>>,
 ) {
-    let has_badge = area.y == frame.area().y;
-    let lines = progress_lines(label, progress, elapsed, area.width, has_badge);
-    let [middle] = Layout::vertical([Constraint::Length(lines.len() as u16)])
+    let card_width = area.width.saturating_sub(4).min(68);
+    let room = card_width.saturating_sub(6);
+    let mut lines = progress_lines(progress, elapsed, room);
+    if let Some(gauge) = gauge(room) {
+        lines.splice(3..3, [gauge, Line::default()]);
+    }
+    let [row] = Layout::vertical([Constraint::Length(lines.len() as u16 + 2)])
         .flex(Flex::Center)
         .areas(area);
-    frame.render_widget(Paragraph::new(lines).centered(), middle);
+    let [card] = Layout::horizontal([Constraint::Length(card_width)])
+        .flex(Flex::Center)
+        .areas(row);
+    let label = fit_start(label, usize::from(card_width.saturating_sub(16)));
+    let block = theme::panel(&format!("Scanning {label}")).padding(Padding::horizontal(2));
+    frame.render_widget(Paragraph::new(lines).block(block), card);
 }
 
-fn progress_lines(
-    label: &str,
-    progress: &Progress,
-    elapsed: Duration,
-    width: u16,
-    has_badge: bool,
-) -> Vec<Line<'static>> {
+/// A block that slides to and fro while a scan has no end in sight.
+fn sweep(elapsed: Duration, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let block = (width / 6).max(1);
+    let room = width.saturating_sub(block).max(1);
+    let step = 2 * (elapsed.as_millis() / TICK.as_millis()) as usize % (2 * room);
+    let start = if step > room { 2 * room - step } else { step };
+    Line::from(vec![
+        Span::styled("·".repeat(start), Style::new().fg(TRACK)),
+        Span::styled("█".repeat(block), Style::new().fg(ACCENT)),
+        Span::styled(
+            "·".repeat(width.saturating_sub(start + block)),
+            Style::new().fg(TRACK),
+        ),
+    ])
+}
+
+fn progress_lines(progress: &Progress, elapsed: Duration, room: u16) -> Vec<Line<'static>> {
     let spinner = SPINNER[(elapsed.as_millis() / TICK.as_millis()) as usize % SPINNER.len()];
-    let counts = format!(
-        "{} · {} · {:.1} s",
-        format::items(progress.items()),
-        format::size(progress.bytes()),
-        elapsed.as_secs_f64()
-    );
-    let current = fit_start(
-        &format::path(&progress.current()),
-        usize::from(width).saturating_sub(4),
-    );
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(DIM);
+    let counts = Line::from(vec![
+        Span::styled(format!("{spinner}  "), Style::new().fg(ACCENT)),
+        Span::styled(format::count(progress.items()), bold),
+        Span::styled(" items   ", dim),
+        Span::styled(format::size(progress.bytes()), bold),
+        Span::styled(format!("   {:.1} s", elapsed.as_secs_f64()), dim),
+    ]);
+    let current = fit_start(&format::path(&progress.current()), usize::from(room));
     vec![
-        Line::from(vec![
-            Span::styled(if has_badge { " ruim " } else { "" }, BADGE),
-            Span::raw(format!("  scanning {label} {spinner}")),
-        ]),
-        Line::raw(""),
-        Line::raw(counts),
-        Line::styled(current, Style::new().fg(DIM)),
-        Line::raw(""),
-        Line::styled("q to stop", Style::new().fg(DIM)),
+        Line::default(),
+        counts,
+        Line::default(),
+        Line::styled(current, dim),
+        Line::default(),
     ]
 }
 
@@ -938,6 +1181,40 @@ mod tests {
         assert_eq!(fit_start("~/a/b", 10), "~/a/b");
         assert_eq!(fit_start("~/Documents/deep/folder", 10), "…ep/folder");
         assert_eq!(fit_start("~/Documents/deep/folder", 10).chars().count(), 10);
+    }
+
+    #[test]
+    fn fit_end_keeps_the_start() {
+        assert_eq!(fit_end("short", 10), "short");
+        assert_eq!(fit_end("what apps keep in ~/Library", 12), "what apps…");
+    }
+
+    #[test]
+    fn wrap_breaks_between_words() {
+        assert_eq!(
+            wrap("No access to locked. Give your terminal access.", 20),
+            ["No access to locked.", "Give your terminal", "access."]
+        );
+        assert_eq!(
+            wrap("Could not move /a/very/long/path", 10),
+            ["Could not", "move", "/a/very/lo", "ng/path"]
+        );
+    }
+
+    #[test]
+    fn crumbs_drop_the_first_ones_when_room_runs_out() {
+        let crumbs = path_crumbs("~/Documents/Panenco/qit");
+        assert_eq!(crumbs, ["~", "Documents", "Panenco", "qit"]);
+        assert_eq!(path_crumbs("/data"), ["/", "data"]);
+        let text = |room| -> String {
+            crumb_spans(&crumbs, room)
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect()
+        };
+        assert_eq!(text(40), "~ › Documents › Panenco › qit");
+        assert_eq!(text(20), "… › Panenco › qit");
+        assert_eq!(text(10), "… › qit");
     }
 
     #[test]

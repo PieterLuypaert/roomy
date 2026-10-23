@@ -58,14 +58,15 @@ fn shows_the_folder_biggest_first() {
 
     let lines = screen(&mut browser);
 
-    assert!(lines[0].contains("/data"), "{}", lines[0]);
-    assert!(lines[0].contains("10.0 kB · 5 items"), "{}", lines[0]);
+    assert!(lines[0].contains("/ › data"), "{}", lines[0]);
+    assert!(lines[0].contains("10.0 kB"), "{}", lines[0]);
+    assert!(lines[1].contains("data ─ 3 items"), "{}", lines[1]);
     assert!(
         lines[2].contains("6.0 kB") && lines[2].contains("60%") && lines[2].contains("movie.mp4")
     );
     assert!(lines[3].contains("Documents/") && lines[3].contains("2 items"));
     assert!(lines[4].contains("locked/  no access"));
-    assert!(lines[9].contains("1 no access"));
+    assert!(lines[8].contains("1 no access"), "{}", lines[8]);
 }
 
 #[test]
@@ -95,11 +96,10 @@ fn explains_why_a_locked_folder_does_not_open() {
 
     assert_eq!(browser.path(), PathBuf::from("/data"));
     assert!(browser.status().unwrap().contains("No access to locked"));
-    let footer = screen(&mut browser).pop().unwrap();
-    assert!(
-        footer.contains("No access to locked") && !footer.contains("quit"),
-        "{footer}"
-    );
+    let mut lines = screen(&mut browser);
+    let footer = lines.pop().unwrap();
+    assert!(lines.join("\n").contains("No access to locked"));
+    assert!(footer.contains("quit"), "{footer}");
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn sorting_by_name_keeps_the_selection() {
     assert!(lines[2].contains("Documents/"));
     assert!(lines[4].contains("movie.mp4"));
     assert_eq!(browser.selected().unwrap().label(), "Documents");
-    assert!(lines[9].contains("name"));
+    assert!(lines[1].contains("by name"), "{}", lines[1]);
 }
 
 #[test]
@@ -149,6 +149,21 @@ fn long_item_counts_are_not_cut_off() {
 }
 
 #[test]
+fn a_long_folder_name_leaves_room_for_the_count() {
+    let long = "a-folder-with-a-name-far-too-long-for-the-border-of-the-panel-that-it-gives-a-title-to-here";
+    let inside = Node::with_children(long, vec![Node::leaf("a.txt", Kind::File, 1)]);
+    let mut browser = Browser::new(
+        Node::with_children("/data", vec![inside]),
+        PathBuf::from("/data"),
+    );
+    press(&mut browser, KeyCode::Enter);
+
+    let lines = screen(&mut browser);
+
+    assert!(lines[1].contains("… ─ 1 item"), "{}", lines[1]);
+}
+
+#[test]
 fn scrolls_to_keep_the_cursor_on_screen() {
     let files = (0..50)
         .map(|i| Node::leaf(format!("file-{i:02}"), Kind::File, 1_000 + i))
@@ -159,18 +174,18 @@ fn scrolls_to_keep_the_cursor_on_screen() {
     press(&mut browser, KeyCode::End);
     let lines = screen(&mut browser);
 
-    assert!(lines[8].contains("file-00"), "{}", lines[8]);
+    assert!(lines[7].contains("file-00"), "{}", lines[7]);
     assert_eq!(browser.selected().unwrap().label(), "file-00");
 
     click(&mut browser, 2);
-    assert_eq!(browser.selected().unwrap().label(), "file-06");
+    assert_eq!(browser.selected().unwrap().label(), "file-05");
 }
 
 #[test]
 fn jumping_to_a_locked_folder_shows_why_from_its_parent() {
     let mut browser = sample();
 
-    browser.jump(vec![2]);
+    browser.jump(vec![2], None);
 
     assert_eq!(browser.path(), PathBuf::from("/data"));
     assert_eq!(browser.selected().unwrap().label(), "locked");

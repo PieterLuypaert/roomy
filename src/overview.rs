@@ -5,18 +5,19 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
 use crate::format;
 use crate::scan::{self, Progress};
+use crate::theme::{self, ACCENT, DIM, TRACK, WARN};
 use crate::tree::Node;
-use crate::ui::{self, Browser, Cursor, DIM, Outcome, Pointer, SELECTION, TRACK, WARN};
+use crate::ui::{self, Browser, Cursor, Outcome, Pointer, Toast};
 use crate::volumes::{self, Disk};
 
 const PALETTE: [Color; 7] = [
@@ -31,6 +32,21 @@ const PALETTE: [Color; 7] = [
 const OTHER: Color = Color::Indexed(245);
 const SYSTEM: Color = Color::Indexed(250);
 const HIDDEN: Color = Color::Indexed(242);
+const OVERVIEW_KEYS: [(&str, &str); 4] = [
+    ("↑↓", "move"),
+    ("→", "open"),
+    ("b", "browse all"),
+    ("q", "quit"),
+];
+const PLACE_KEYS: [(&str, &str); 7] = [
+    ("↑↓", "move"),
+    ("→", "open"),
+    ("←", "back"),
+    ("o", "finder"),
+    ("y", "copy path"),
+    ("d", "trash"),
+    ("q", "quit"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
@@ -203,7 +219,7 @@ pub struct App {
     group: Option<Group>,
     screen: Screen,
     came_from: Screen,
-    status: Option<String>,
+    toast: Option<Toast>,
     moved: u64,
     pending: Option<usize>,
 }
@@ -225,7 +241,7 @@ impl App {
             group: None,
             screen: Screen::Overview,
             came_from: Screen::Overview,
-            status: None,
+            toast: None,
             moved: 0,
             pending: None,
         }
@@ -245,7 +261,7 @@ impl App {
     }
 
     pub fn status(&self) -> Option<&str> {
-        self.status.as_deref()
+        self.toast.as_ref().map(Toast::text)
     }
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
@@ -256,7 +272,7 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(*key),
             Event::Mouse(mouse) if self.pending.is_none() => {
                 if ui::is_click(mouse) {
-                    self.status = None;
+                    self.toast = None;
                 }
                 self.on_pointer(*mouse);
                 Outcome::Continue
@@ -280,7 +296,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Outcome {
-        self.status = None;
+        self.toast = None;
         if let Some(index) = self.pending.take() {
             if ui::is_yes(key.code) {
                 self.confirm_place(index);
@@ -332,9 +348,9 @@ impl App {
         let Some(index) = self.selected_place() else {
             return;
         };
-        self.status = Some(match action(&self.summary.places[index].path) {
-            Ok(()) => done.to_string(),
-            Err(err) => format!("That did not work: {err}"),
+        self.toast = Some(match action(&self.summary.places[index].path) {
+            Ok(()) => Toast::done(done),
+            Err(err) => Toast::problem(format!("That did not work: {err}")),
         });
     }
 
@@ -353,7 +369,7 @@ impl App {
             ui::trash_refusal(node, &place.path)
         };
         match refusal {
-            Some(reason) => self.status = Some(reason),
+            Some(reason) => self.toast = Some(Toast::problem(reason)),
             None => self.pending = Some(index),
         }
     }
@@ -362,13 +378,13 @@ impl App {
         let place = &self.summary.places[index];
         let (trail, path) = (place.trail.clone(), place.path.clone());
         let name = name_of(&path);
-        self.status = Some(match self.browser.trash(&trail, &path) {
+        self.toast = Some(match self.browser.trash(&trail, &path) {
             Ok(size) => {
                 self.moved += size;
                 self.refresh();
-                ui::trashed_message(&name, size)
+                Toast::done(ui::trashed_message(&name, size))
             }
-            Err(err) => format!("Could not move {name} to the Trash: {err}"),
+            Err(err) => Toast::problem(format!("Could not move {name} to the Trash: {err}")),
         });
     }
 
@@ -408,25 +424,27 @@ impl App {
                 self.places.reset(0);
                 self.screen = Screen::Places;
             }
-            Part::Hidden => self.status = Some(hidden_reason(&self.disk)),
+            Part::Hidden => self.toast = Some(Toast::info(hidden_reason(&self.disk))),
             Part::System | Part::Reserved => {
-                self.status = Some("The system manages this space itself.".to_string());
+                self.toast = Some(Toast::info("The system manages this space itself."));
             }
             Part::Free => {}
         }
     }
 
     fn open_place(&mut self) {
-        let Some(&index) = self.shown.get(self.places.index) else {
+        let (Some(&index), Some(group)) = (self.shown.get(self.places.index), self.group) else {
             return;
         };
-        self.browser.jump(self.summary.places[index].trail.clone());
+        let trail = self.summary.places[index].trail.clone();
+        self.browser.jump(trail, Some(self.group_crumbs(group)));
         self.came_from = Screen::Places;
         self.screen = Screen::Browser;
     }
 
     fn browse_all(&mut self) {
-        self.browser.jump(Vec::new());
+        self.browser
+            .jump(Vec::new(), Some(vec![self.disk.name.clone()]));
         self.came_from = self.screen;
         self.screen = Screen::Browser;
     }
@@ -455,26 +473,52 @@ impl App {
 
     fn render_overview(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = ui::screen(frame.area());
-        ui::header(frame, top, &self.disk.name, &disk_summary(&self.disk));
-        let [bar, _, list] = Layout::vertical([
-            Constraint::Length(1),
+        let crumbs = std::slice::from_ref(&self.disk.name);
+        ui::header(frame, top, crumbs, &disk_summary(&self.disk));
+        let block = theme::panel("Where the space goes").title_bottom(theme::aside(&self.notes()));
+        let inner = ui::framed(frame, body, block);
+        let [bar, pointer, rest] = Layout::vertical([
+            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Fill(1),
         ])
-        .areas(body);
+        .areas(inner);
+        let [list, strip] = ui::make_room(rest, self.toast.as_ref());
+        let bar = bar.inner(Margin::new(1, 0));
         let parts: Vec<(u64, Color, bool)> = self
             .slices
             .iter()
             .map(|slice| (slice.size, self.color(slice.part), slice.part == Part::Free))
             .collect();
-        frame.render_widget(Paragraph::new(stacked(&parts, bar.width)), bar);
+        let line = stacked(&parts, bar.width);
+        frame.render_widget(Paragraph::new(vec![line.clone(), line]), bar);
+        let pointer = pointer.inner(Margin::new(1, 0));
+        frame.render_widget(Paragraph::new(self.pointer(&parts, pointer.width)), pointer);
         self.render_slices(frame, list);
-        let keys = [
-            ("↑↓", "move"),
-            ("→", "open"),
-            ("b", "browse all"),
-            ("q", "quit"),
-        ];
+        ui::footer(frame, bottom, &OVERVIEW_KEYS);
+        if let Some(toast) = &self.toast {
+            ui::show_toast(frame, strip, toast);
+        }
+    }
+
+    /// Underlines the selected part of the disk bar.
+    fn pointer(&self, parts: &[(u64, Color, bool)], width: u16) -> Line<'static> {
+        let Some(slice) = self.slices.get(self.overview.index) else {
+            return Line::default();
+        };
+        let sizes: Vec<u64> = parts.iter().map(|part| part.0).collect();
+        let cells = apportion(&sizes, usize::from(width));
+        let start: usize = cells[..self.overview.index].iter().sum();
+        Line::from(vec![
+            Span::raw(" ".repeat(start)),
+            Span::styled(
+                "▔".repeat(cells[self.overview.index]),
+                Style::new().fg(self.color(slice.part)),
+            ),
+        ])
+    }
+
+    fn notes(&self) -> String {
         let denied: u64 = self.summary.totals.iter().map(|total| total.denied).sum();
         let mut notes = Vec::new();
         if denied > 0 {
@@ -484,8 +528,7 @@ impl App {
         if extra > 0 {
             notes.push(overcount_note(extra));
         }
-        let note = notes.join(" · ");
-        ui::footer(frame, bottom, &keys, self.status.as_deref(), &note);
+        notes.join(" · ")
     }
 
     fn render_slices(&mut self, frame: &mut Frame, area: Rect) {
@@ -499,9 +542,10 @@ impl App {
             })
             .max()
             .unwrap_or(0);
+        let about = ui::row_width(area).saturating_sub(9 + 4 + 1 + name_width + 13 + 5);
         let rows: Vec<Row> = self.slices[visible]
             .iter()
-            .map(|slice| self.slice_row(slice))
+            .map(|slice| self.slice_row(slice, usize::from(about)))
             .collect();
         let widths = [
             Constraint::Length(9),
@@ -511,13 +555,10 @@ impl App {
             Constraint::Fill(1),
             Constraint::Length(13),
         ];
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(SELECTION);
-        frame.render_stateful_widget(table, area, &mut self.overview.state());
+        frame.render_stateful_widget(ui::list(rows, widths), area, &mut self.overview.state());
     }
 
-    fn slice_row(&self, slice: &Slice) -> Row<'static> {
+    fn slice_row(&self, slice: &Slice, about: usize) -> Row<'static> {
         let share = format::share(slice.size, scale(&self.disk, &self.slices));
         let swatch = match slice.part {
             Part::Free => " ",
@@ -533,14 +574,16 @@ impl App {
         }
         let dim = Style::new().fg(DIM);
         Row::new([
-            Cell::from(Line::from(format::size(slice.size)).right_aligned()),
+            Cell::from(
+                Line::styled(format::size(slice.size), theme::size(slice.size)).right_aligned(),
+            ),
             Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
             Cell::from(Span::styled(
                 swatch,
                 Style::new().fg(self.color(slice.part)),
             )),
             Cell::from(Line::from(name)),
-            Cell::from(slice.about(&self.disk)).style(dim),
+            Cell::from(ui::fit_end(&slice.about(&self.disk), about)).style(dim),
             Cell::from(Line::from(places).right_aligned()).style(dim),
         ])
     }
@@ -549,35 +592,38 @@ impl App {
         let Some(group) = self.group else {
             return;
         };
-        let [top, list, bottom] = ui::screen(frame.area());
+        let [top, body, bottom] = ui::screen(frame.area());
         let total: u64 = self
             .shown
             .iter()
             .map(|&i| self.summary.places[i].size)
             .sum();
-        let summary = format!(
-            "{} · {}",
-            format::size(total),
-            format::places(self.shown.len())
-        );
-        ui::header(frame, top, group.name(), &summary);
+        ui::header(frame, top, &self.group_crumbs(group), &format::size(total));
+        let count = format::places(self.shown.len());
+        let mut block = theme::counted(group.name(), &count);
+        let room = body
+            .width
+            .saturating_sub(ui::width(group.name()) + ui::width(&count) + 13);
+        if ui::width(group.about()) <= room {
+            block = block.title(theme::aside(group.about()));
+        }
+        let inner = ui::framed(frame, body, block);
+        let [list, strip] = ui::make_room(inner, self.toast.as_ref());
         self.render_place_rows(frame, list, total);
-        let keys = [
-            ("↑↓", "move"),
-            ("→", "open"),
-            ("←", "back"),
-            ("o", "finder"),
-            ("y", "copy path"),
-            ("d", "trash"),
-            ("q", "quit"),
-        ];
-        ui::footer(frame, bottom, &keys, self.status.as_deref(), "");
+        ui::footer(frame, bottom, &PLACE_KEYS);
+        if let Some(toast) = &self.toast {
+            ui::show_toast(frame, strip, toast);
+        }
         if let Some(index) = self.pending {
             let place = &self.summary.places[index];
             let node = self.browser.root().descend(&place.trail);
             let path = format::path(&place.path);
             ui::confirm_trash(frame, &name_of(&place.path), &path, node.size, node.items);
         }
+    }
+
+    fn group_crumbs(&self, group: Group) -> Vec<String> {
+        vec![self.disk.name.clone(), group.name().to_string()]
     }
 
     fn render_place_rows(&mut self, frame: &mut Frame, area: Rect, total: u64) {
@@ -587,7 +633,7 @@ impl App {
             .iter()
             .map(|&i| ui::width(self.summary.places[i].label))
             .max();
-        let columns = PlaceColumns::fit(area.width, label.unwrap_or(0));
+        let columns = PlaceColumns::fit(ui::row_width(area), label.unwrap_or(0));
         let rows: Vec<Row> = self.shown[visible]
             .iter()
             .map(|&index| place_row(&self.summary.places[index], total, &columns))
@@ -599,10 +645,7 @@ impl App {
             Constraint::Fill(1),
             Constraint::Length(columns.label),
         ];
-        let table = Table::new(rows, widths)
-            .column_spacing(1)
-            .row_highlight_style(SELECTION);
-        frame.render_stateful_widget(table, area, &mut self.places.state());
+        frame.render_stateful_widget(ui::list(rows, widths), area, &mut self.places.state());
     }
 }
 
@@ -631,7 +674,7 @@ fn place_row(place: &Place, total: u64, columns: &PlaceColumns) -> Row<'static> 
     path.extend(note);
     let dim = Style::new().fg(DIM);
     Row::new([
-        Cell::from(Line::from(format::size(place.size)).right_aligned()),
+        Cell::from(Line::styled(format::size(place.size), theme::size(place.size)).right_aligned()),
         Cell::from(Line::from(format::percent(share)).right_aligned()).style(dim),
         Cell::from(ui::bar_line(share, columns.bar)),
         Cell::from(Line::from(path)),
@@ -740,17 +783,23 @@ fn session(
 }
 
 fn waiting(frame: &mut Frame, disk: &Disk, progress: &Progress, elapsed: Duration) {
-    let [top, body, _] = ui::screen(frame.area());
-    ui::header(frame, top, &disk.name, &disk_summary(disk));
-    let [bar, rest] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
+    let [top, body, bottom] = ui::screen(frame.area());
+    ui::header(
+        frame,
+        top,
+        std::slice::from_ref(&disk.name),
+        &disk_summary(disk),
+    );
     let scanned = progress.bytes().min(disk.data);
     let parts = [
-        (scanned, ui::ACCENT, false),
-        (disk.data - scanned, DIM, false),
+        (scanned, ACCENT, false),
+        (disk.data - scanned, TRACK, false),
         (disk.system, SYSTEM, false),
         (disk.other(), SYSTEM, false),
         (disk.free, TRACK, true),
     ];
-    frame.render_widget(Paragraph::new(stacked(&parts, bar.width)), bar);
-    ui::scanning(frame, rest, "the whole disk", progress, elapsed);
+    ui::scanning(frame, body, "the whole disk", progress, elapsed, |width| {
+        Some(stacked(&parts, width))
+    });
+    ui::footer(frame, bottom, &ui::STOP_KEYS);
 }
