@@ -74,6 +74,14 @@ pub(crate) fn aside(text: &str) -> Line<'static> {
     .right_aligned()
 }
 
+/// A quiet title for the left end of a panel's border.
+pub(crate) fn note(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("─", Style::new().fg(BORDER)),
+        Span::styled(format!(" {text} "), Style::new().fg(DIM)),
+    ])
+}
+
 pub(crate) fn keycap(key: &str) -> Span<'static> {
     Span::styled(format!(" {key} "), KEYCAP)
 }

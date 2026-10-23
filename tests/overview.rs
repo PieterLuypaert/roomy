@@ -142,6 +142,10 @@ fn opening_a_group_then_a_place_reaches_the_folder_and_back() {
         text.contains("Test HD › Project dependencies & builds › node_modules"),
         "{text}"
     );
+    assert!(
+        text.contains("─ /Users/ann/Documents/app/node_modules ─"),
+        "{text}"
+    );
 
     press(&mut app, KeyCode::Left);
     assert_eq!(app.group(), Some(Group::Builds));

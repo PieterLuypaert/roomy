@@ -478,7 +478,13 @@ impl Browser {
         let count = self.count();
         let room = usize::from(body.width.saturating_sub(width(&count) + 10));
         let name = fit_end(crumbs.last().map_or("", String::as_str), room);
-        let block = theme::counted(&name, &count).title_bottom(theme::aside(&self.trouble()));
+        let trouble = self.trouble();
+        let mut block = theme::counted(&name, &count).title_bottom(theme::aside(&trouble));
+        if self.origin.is_some() {
+            let room = usize::from(body.width.saturating_sub(width(&trouble) + 10));
+            let path = fit_start(&format::path(&self.path()), room);
+            block = block.title_bottom(theme::note(&path));
+        }
         let inner = framed(frame, body, block);
         let [list, strip] = make_room(inner, self.toast.as_ref());
         self.render_rows(frame, list);
