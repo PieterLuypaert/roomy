@@ -474,7 +474,8 @@ impl App {
 
     fn render_overview(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = ui::screen(frame.area());
-        let (body, side) = detail::split(body);
+        let selected = self.slices.get(self.overview.index);
+        let (body, side) = detail::split(body, || selected.map(|slice| self.slice_detail(slice)));
         let crumbs = std::slice::from_ref(&self.disk.name);
         ui::header(frame, top, crumbs, &disk_summary(&self.disk));
         let block = theme::panel("Where the space goes").title_bottom(theme::aside(&self.notes()));
@@ -497,8 +498,8 @@ impl App {
         let pointer = pointer.inner(Margin::new(1, 0));
         frame.render_widget(Paragraph::new(self.pointer(&parts, pointer.width)), pointer);
         self.render_slices(frame, list, side.is_none());
-        if let (Some(side), Some(slice)) = (side, self.slices.get(self.overview.index)) {
-            detail::render(frame, side, &self.slice_detail(slice));
+        if let Some((side, detail)) = &side {
+            detail::render(frame, *side, detail);
         }
         ui::footer(frame, bottom, &OVERVIEW_KEYS);
         if let Some(toast) = &self.toast {
@@ -642,12 +643,12 @@ impl App {
             return;
         };
         let [top, body, bottom] = ui::screen(frame.area());
-        let (body, side) = detail::split(body);
         let total: u64 = self
             .shown
             .iter()
             .map(|&i| self.summary.places[i].size)
             .sum();
+        let (body, side) = detail::split(body, || self.place_detail(group, total));
         ui::header(frame, top, &self.group_crumbs(group), &format::size(total));
         let count = format::places(self.shown.len());
         let mut block = theme::counted(group.name(), &count);
@@ -660,8 +661,8 @@ impl App {
         let inner = ui::framed(frame, body, block);
         let [list, strip] = ui::make_room(inner, self.toast.as_ref());
         self.render_place_rows(frame, list, total, side.is_none());
-        if let (Some(side), Some(detail)) = (side, self.place_detail(group, total)) {
-            detail::render(frame, side, &detail);
+        if let Some((side, detail)) = &side {
+            detail::render(frame, *side, detail);
         }
         ui::footer(frame, bottom, &PLACE_KEYS);
         if let Some(toast) = &self.toast {

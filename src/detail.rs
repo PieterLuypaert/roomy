@@ -35,15 +35,19 @@ pub(crate) struct Entry {
     pub(crate) style: Style,
 }
 
-/// Splits off the pane's side of `area`, unless the screen is too narrow for both.
-pub(crate) fn split(area: Rect) -> (Rect, Option<Rect>) {
-    if area.width < MIN_WIDTH {
+/// Splits off a side of `area` for the pane that `detail` makes, unless the screen is too
+/// narrow for both or nothing is selected; the list keeps the whole width then.
+pub(crate) fn split(
+    area: Rect,
+    detail: impl FnOnce() -> Option<Detail>,
+) -> (Rect, Option<(Rect, Detail)>) {
+    let Some(detail) = (area.width >= MIN_WIDTH).then(detail).flatten() else {
         return (area, None);
-    }
-    let width = (area.width * 7 / 20).clamp(34, 56);
+    };
+    let width = (u32::from(area.width) * 7 / 20).clamp(34, 56) as u16;
     let [list, pane] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(width)]).areas(area);
-    (list, Some(pane))
+    (list, Some((pane, detail)))
 }
 
 /// The pane for `node`, which takes `size` of `whole`, the folder or group called `of`.

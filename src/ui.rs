@@ -474,8 +474,9 @@ impl Browser {
 
     pub fn render(&mut self, frame: &mut Frame) {
         let [top, body, bottom] = screen(frame.area());
-        let (body, side) = detail::split(body);
         let crumbs = self.crumbs();
+        let of = crumbs.last().map_or("", String::as_str);
+        let (body, side) = detail::split(body, || self.detail(of));
         header(frame, top, &crumbs, &format::size(self.current().size));
         let count = self.count();
         let room = usize::from(body.width.saturating_sub(width(&count) + 10));
@@ -490,9 +491,8 @@ impl Browser {
         let inner = framed(frame, body, block);
         let [list, strip] = make_room(inner, self.toast.as_ref());
         self.render_rows(frame, list, side.is_none());
-        let of = crumbs.last().map_or("", String::as_str);
-        if let (Some(side), Some(detail)) = (side, self.detail(of)) {
-            detail::render(frame, side, &detail);
+        if let Some((side, detail)) = &side {
+            detail::render(frame, *side, detail);
         }
         footer(frame, bottom, &KEYS);
         if let Some(toast) = &self.toast {

@@ -83,6 +83,19 @@ fn the_list_hands_its_item_counts_to_the_pane() {
     assert!(!narrow.join("\n").contains("biggest inside"));
 }
 
+#[test]
+fn an_empty_folder_keeps_the_whole_width() {
+    let root = Node::with_children("/data", vec![Node::dir("empty", 0)]);
+    let mut browser = Browser::new(root, PathBuf::from("/data"));
+    press(&mut browser, KeyCode::Enter);
+
+    let lines = text(120, 14, |frame| browser.render(frame));
+
+    assert_eq!(lines[1].matches('╮').count(), 1, "{}", lines[1]);
+    assert!(lines[1].ends_with('╮'), "{}", lines[1]);
+    assert!(lines.join("\n").contains("Empty folder"));
+}
+
 fn disk() -> Disk {
     Disk {
         name: "Test HD".to_string(),
