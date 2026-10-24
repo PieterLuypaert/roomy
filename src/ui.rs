@@ -600,12 +600,7 @@ pub(crate) fn is_yes(code: KeyCode) -> bool {
 pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64, items: u64) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(72);
-    let [row] = Layout::vertical([Constraint::Length(7)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [popup] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(row);
+    let popup = centered(area, width, 7);
     let lines = popup_lines(
         name,
         path,
@@ -1057,6 +1052,17 @@ pub(crate) fn is_dismissal(event: &Event) -> bool {
     }
 }
 
+/// A `width` by `height` rectangle in the middle of `area`, cut to fit inside it.
+pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [middle] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(row);
+    middle
+}
+
 pub(crate) fn is_click(mouse: &MouseEvent) -> bool {
     matches!(mouse.kind, MouseEventKind::Down(_))
 }
@@ -1125,12 +1131,7 @@ pub(crate) fn scanning(
     if let Some(gauge) = gauge(room) {
         lines.splice(3..3, [gauge, Line::default()]);
     }
-    let [row] = Layout::vertical([Constraint::Length(lines.len() as u16 + 2)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [card] = Layout::horizontal([Constraint::Length(card_width)])
-        .flex(Flex::Center)
-        .areas(row);
+    let card = centered(area, card_width, lines.len() as u16 + 2);
     let label = fit_start(label, usize::from(card_width.saturating_sub(16)));
     let block = theme::panel(&format!("Scanning {label}")).padding(Padding::horizontal(2));
     frame.render_widget(Paragraph::new(lines).block(block), card);

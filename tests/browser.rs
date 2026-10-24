@@ -357,12 +357,15 @@ fn question_mark_shows_every_key_and_any_key_closes_it() {
     press(&mut browser, KeyCode::Char('?'));
     let open = screen_of(&mut browser, 90, 24).join("\n");
     assert!(open.contains("All keys"), "{open}");
-    assert!(open.contains("show it in the Finder"), "{open}");
+    assert!(open.contains("show in the Finder"), "{open}");
     let short = screen_of(&mut browser, 90, 14).join("\n");
     assert!(
-        short.contains("one row") && short.contains("quit"),
+        short.contains("up and down") && short.contains("quit"),
         "{short}"
     );
+    assert!(short.contains("trash, after asking"), "{short}");
+    let tiny = screen_of(&mut browser, 90, 10).join("\n");
+    assert!(tiny.contains("a taller window shows them all"), "{tiny}");
 
     assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Continue);
     assert!(!screen(&mut browser).join("\n").contains("All keys"));
