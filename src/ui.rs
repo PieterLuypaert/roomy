@@ -20,6 +20,7 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::actions::{self, Trasher};
 use crate::detail::{self, Detail};
 use crate::format;
+use crate::help;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, BADGE, DIM, DONE, SELECTION, TRACK, WARN};
 use crate::tree::{Kind, Node};
@@ -33,14 +34,15 @@ const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '�
 const PARTIAL: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 const SEPARATOR: &str = " › ";
 pub(crate) const STOP_KEYS: [(&str, &str); 1] = [("q", "stop")];
-const KEYS: [(&str, &str); 8] = [
+/// The key that shows all the others, which the key row keeps when it runs out of room.
+const HELP_KEY: &str = "?";
+const KEYS: [(&str, &str); 7] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("←", "back"),
     ("s", "sort"),
-    ("o", "finder"),
-    ("y", "copy path"),
     ("d", "trash"),
+    (HELP_KEY, "all keys"),
     ("q", "quit"),
 ];
 
@@ -227,6 +229,7 @@ pub struct Browser {
     trashed: u64,
     /// Crumbs for what lies above the floor, when the overview opened the browser.
     origin: Option<Vec<String>>,
+    is_helping: bool,
 }
 
 impl Browser {
@@ -248,6 +251,7 @@ impl Browser {
             trasher: actions::trash,
             trashed: 0,
             origin: None,
+            is_helping: false,
         };
         browser.show(None);
         browser
@@ -342,6 +346,9 @@ impl Browser {
     }
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
+        if self.is_helping {
+            return close_overlay(&mut self.is_helping, event);
+        }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.toast = None;
@@ -427,6 +434,7 @@ impl Browser {
             KeyCode::Char('o') => self.act(actions::reveal, "Showed it in the Finder."),
             KeyCode::Char('y') => self.act(actions::copy, "Copied the path."),
             KeyCode::Char('d') | KeyCode::Delete => self.ask(),
+            KeyCode::Char('?') => self.is_helping = true,
             _ => {}
         }
         Outcome::Continue
@@ -502,6 +510,9 @@ impl Browser {
             let node = &self.current().children[child];
             let path = format::path(&self.path().join(&*node.name));
             confirm_trash(frame, &node.label(), &path, node.size, node.items);
+        }
+        if self.is_helping {
+            help::render(frame, help::BROWSER);
         }
     }
 
@@ -588,12 +599,7 @@ pub(crate) fn is_yes(code: KeyCode) -> bool {
 pub(crate) fn confirm_trash(frame: &mut Frame, name: &str, path: &str, size: u64, items: u64) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(72);
-    let [row] = Layout::vertical([Constraint::Length(7)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [popup] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(row);
+    let popup = centered(area, width, 7);
     let lines = popup_lines(
         name,
         path,
@@ -943,13 +949,14 @@ pub(crate) fn footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
         return;
     };
     let cost = |(key, action): &(&str, &str)| width(key) + width(action) + 5;
-    let mut used = 1 + cost(last);
+    let room = area.width.saturating_sub(1 + cost(last));
+    let mut shown: Vec<&(&str, &str)> = rest.iter().collect();
+    while shown.iter().map(|hint| cost(hint)).sum::<u16>() > room {
+        let keep_help = shown.iter().rposition(|(key, _)| *key != HELP_KEY);
+        shown.remove(keep_help.unwrap_or(shown.len() - 1));
+    }
     let mut spans = vec![Span::raw(" ")];
-    for hint in rest {
-        used += cost(hint);
-        if used > area.width {
-            break;
-        }
+    for hint in shown {
         spans.extend(key_hint(hint, "  "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1035,6 +1042,33 @@ fn session(
     }
 }
 
+/// While an overlay is open, the next key press or click only closes it; Ctrl+C still quits.
+pub(crate) fn close_overlay(is_open: &mut bool, event: &Event) -> Outcome {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press && is_ctrl_c(*key) => Outcome::Quit,
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            *is_open = false;
+            Outcome::Continue
+        }
+        Event::Mouse(mouse) if is_click(mouse) => {
+            *is_open = false;
+            Outcome::Continue
+        }
+        _ => Outcome::Continue,
+    }
+}
+
+/// A `width` by `height` rectangle in the middle of `area`, cut to fit inside it.
+pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [middle] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(row);
+    middle
+}
+
 pub(crate) fn is_click(mouse: &MouseEvent) -> bool {
     matches!(mouse.kind, MouseEventKind::Down(_))
 }
@@ -1083,8 +1117,11 @@ fn is_quit(event: &Event) -> bool {
 }
 
 pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
-    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    is_ctrl_c || key.code == KeyCode::Char('q')
+    is_ctrl_c(key) || key.code == KeyCode::Char('q')
+}
+
+fn is_ctrl_c(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// A card in the middle of `area` that counts what the scan has seen so far, with the
@@ -1103,12 +1140,7 @@ pub(crate) fn scanning(
     if let Some(gauge) = gauge(room) {
         lines.splice(3..3, [gauge, Line::default()]);
     }
-    let [row] = Layout::vertical([Constraint::Length(lines.len() as u16 + 2)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [card] = Layout::horizontal([Constraint::Length(card_width)])
-        .flex(Flex::Center)
-        .areas(row);
+    let card = centered(area, card_width, lines.len() as u16 + 2);
     let label = fit_start(label, usize::from(card_width.saturating_sub(16)));
     let block = theme::panel(&format!("Scanning {label}")).padding(Padding::horizontal(2));
     frame.render_widget(Paragraph::new(lines).block(block), card);

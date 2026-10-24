@@ -20,7 +20,7 @@ Keys:
   left or h, esc   go back       s                  change sort (folders)
   o                show in Finder                   y copy the path
   d                move to the Trash (asks first)   b browse the whole disk
-  q                quit";
+  ?                all keys                         q quit";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {

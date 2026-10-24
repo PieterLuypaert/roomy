@@ -15,6 +15,7 @@ use crate::actions::{self, Trasher};
 use crate::categories::{self, Group, Place, Summary};
 use crate::detail::{self, Detail, Entry};
 use crate::format;
+use crate::help;
 use crate::scan::{self, Progress};
 use crate::theme::{self, ACCENT, DIM, TRACK, WARN};
 use crate::tree::Node;
@@ -33,19 +34,19 @@ const PALETTE: [Color; 7] = [
 const OTHER: Color = Color::Indexed(245);
 const SYSTEM: Color = Color::Indexed(250);
 const HIDDEN: Color = Color::Indexed(242);
-const OVERVIEW_KEYS: [(&str, &str); 4] = [
+const OVERVIEW_KEYS: [(&str, &str); 5] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("b", "browse all"),
+    ("?", "all keys"),
     ("q", "quit"),
 ];
-const PLACE_KEYS: [(&str, &str); 7] = [
+const PLACE_KEYS: [(&str, &str); 6] = [
     ("↑↓", "move"),
     ("→", "open"),
     ("←", "back"),
-    ("o", "finder"),
-    ("y", "copy path"),
     ("d", "trash"),
+    ("?", "all keys"),
     ("q", "quit"),
 ];
 
@@ -223,6 +224,7 @@ pub struct App {
     toast: Option<Toast>,
     moved: u64,
     pending: Option<usize>,
+    is_helping: bool,
 }
 
 impl App {
@@ -245,6 +247,7 @@ impl App {
             toast: None,
             moved: 0,
             pending: None,
+            is_helping: false,
         }
     }
 
@@ -268,6 +271,9 @@ impl App {
     pub fn handle(&mut self, event: &Event) -> Outcome {
         if self.screen == Screen::Browser {
             return self.handle_browser(event);
+        }
+        if self.is_helping {
+            return ui::close_overlay(&mut self.is_helping, event);
         }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(*key),
@@ -322,6 +328,7 @@ impl App {
         }
         match (self.screen, code) {
             (_, KeyCode::Char('b')) => self.browse_all(),
+            (_, KeyCode::Char('?')) => self.is_helping = true,
             (Screen::Overview, KeyCode::Enter | KeyCode::Right | KeyCode::Char('l')) => {
                 self.open_slice();
             }
@@ -455,6 +462,13 @@ impl App {
             Screen::Overview => self.render_overview(frame),
             Screen::Places => self.render_places(frame),
             Screen::Browser => self.browser.render(frame),
+        }
+        if self.is_helping {
+            let keys = match self.screen {
+                Screen::Places => help::PLACES,
+                _ => help::OVERVIEW,
+            };
+            help::render(frame, keys);
         }
     }
 

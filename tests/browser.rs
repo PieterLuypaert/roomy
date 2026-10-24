@@ -31,11 +31,19 @@ fn sample() -> Browser {
 }
 
 fn screen(browser: &mut Browser) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(90, 10)).unwrap();
+    screen_of(browser, 90, 10)
+}
+
+fn screen_of(browser: &mut Browser, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|frame| browser.render(frame)).unwrap();
     let buffer = terminal.backend().buffer();
-    (0..10)
-        .map(|y| (0..90).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
         .collect()
 }
 
@@ -340,4 +348,52 @@ fn a_folder_emptied_by_moves_says_so() {
     press(&mut browser, KeyCode::Char('y'));
 
     assert!(screen(&mut browser).join("\n").contains("Empty folder"));
+}
+
+#[test]
+fn question_mark_shows_every_key_and_any_key_closes_it() {
+    let mut browser = sample();
+
+    press(&mut browser, KeyCode::Char('?'));
+    let open = screen_of(&mut browser, 90, 24).join("\n");
+    assert!(open.contains("All keys"), "{open}");
+    assert!(open.contains("show in the Finder"), "{open}");
+    let short = screen_of(&mut browser, 90, 14).join("\n");
+    assert!(
+        short.contains("up and down") && short.contains("quit"),
+        "{short}"
+    );
+    assert!(short.contains("trash, after asking"), "{short}");
+    let tiny = screen_of(&mut browser, 90, 10).join("\n");
+    assert!(tiny.contains("a taller window shows them all"), "{tiny}");
+
+    assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Continue);
+    assert!(!screen(&mut browser).join("\n").contains("All keys"));
+    assert_eq!(browser.selected().unwrap().label(), "movie.mp4");
+    assert_eq!(press(&mut browser, KeyCode::Char('q')), Outcome::Quit);
+}
+
+#[test]
+fn the_key_row_keeps_all_keys_and_quit_when_it_runs_out_of_room() {
+    let mut browser = sample();
+
+    let wide = screen(&mut browser).pop().unwrap();
+    let narrow = screen_of(&mut browser, 50, 10).pop().unwrap();
+
+    assert!(wide.contains("trash") && !wide.contains("finder"), "{wide}");
+    assert!(
+        narrow.contains("all keys") && narrow.contains("quit"),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("trash"), "{narrow}");
+}
+
+#[test]
+fn ctrl_c_quits_even_with_the_keys_open() {
+    let mut browser = sample();
+    press(&mut browser, KeyCode::Char('?'));
+
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    assert_eq!(browser.handle(&Event::Key(ctrl_c)), Outcome::Quit);
 }
