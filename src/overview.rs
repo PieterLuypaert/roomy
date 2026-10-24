@@ -273,8 +273,7 @@ impl App {
             return self.handle_browser(event);
         }
         if self.is_helping {
-            self.is_helping = !ui::is_dismissal(event);
-            return Outcome::Continue;
+            return ui::close_overlay(&mut self.is_helping, event);
         }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(*key),

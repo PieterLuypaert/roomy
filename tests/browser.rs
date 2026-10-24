@@ -387,3 +387,13 @@ fn the_key_row_keeps_all_keys_and_quit_when_it_runs_out_of_room() {
     );
     assert!(!narrow.contains("trash"), "{narrow}");
 }
+
+#[test]
+fn ctrl_c_quits_even_with_the_keys_open() {
+    let mut browser = sample();
+    press(&mut browser, KeyCode::Char('?'));
+
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+
+    assert_eq!(browser.handle(&Event::Key(ctrl_c)), Outcome::Quit);
+}

@@ -347,8 +347,7 @@ impl Browser {
 
     pub fn handle(&mut self, event: &Event) -> Outcome {
         if self.is_helping {
-            self.is_helping = !is_dismissal(event);
-            return Outcome::Continue;
+            return close_overlay(&mut self.is_helping, event);
         }
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -1043,12 +1042,19 @@ fn session(
     }
 }
 
-/// A key press or a click, which closes an overlay.
-pub(crate) fn is_dismissal(event: &Event) -> bool {
+/// While an overlay is open, the next key press or click only closes it; Ctrl+C still quits.
+pub(crate) fn close_overlay(is_open: &mut bool, event: &Event) -> Outcome {
     match event {
-        Event::Key(key) => key.kind == KeyEventKind::Press,
-        Event::Mouse(mouse) => is_click(mouse),
-        _ => false,
+        Event::Key(key) if key.kind == KeyEventKind::Press && is_ctrl_c(*key) => Outcome::Quit,
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            *is_open = false;
+            Outcome::Continue
+        }
+        Event::Mouse(mouse) if is_click(mouse) => {
+            *is_open = false;
+            Outcome::Continue
+        }
+        _ => Outcome::Continue,
     }
 }
 
@@ -1111,8 +1117,11 @@ fn is_quit(event: &Event) -> bool {
 }
 
 pub(crate) fn is_quit_key(key: KeyEvent) -> bool {
-    let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    is_ctrl_c || key.code == KeyCode::Char('q')
+    is_ctrl_c(key) || key.code == KeyCode::Char('q')
+}
+
+fn is_ctrl_c(key: KeyEvent) -> bool {
+    key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// A card in the middle of `area` that counts what the scan has seen so far, with the
